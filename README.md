@@ -81,11 +81,28 @@ docker compose up --build      # first run builds the image (~a few minutes)
 ```
 
 - UI: http://localhost:8000
-- CPU-only; no GPU required. An 8B model at Q5/Q4 wants ~8 GB free RAM;
-  the 3B/1.5B models run in much less. Expect a few minutes per debate on CPU.
+- Runs on CPU by default; no GPU required. An 8B model at Q5/Q4 wants ~8 GB
+  free RAM; the 3B/1.5B models run in much less. Expect a few minutes per
+  debate on CPU — or use the GPU image below.
 - Debates run fully locally — no LLM API keys needed. Network access is used
   only for the one-off model download and per-debate research (if research
   fails or you're offline, the debate proceeds on the model's own knowledge).
+
+### GPU acceleration (NVIDIA)
+
+With an NVIDIA GPU and the [NVIDIA Container
+Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+installed on the host:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+The first build is slow (~15+ minutes: it compiles llama.cpp's CUDA kernels
+from source), but generation is then typically 10-50x faster than CPU. An 8B
+model at Q4 fits in ~6 GB of VRAM. If the model doesn't fit in your VRAM, set
+`N_GPU_LAYERS` in `docker-compose.gpu.yml` to a positive number to offload
+only part of it and split the rest onto the CPU.
 
 ### Development without Docker
 
@@ -104,6 +121,7 @@ uvicorn backend.main:app --reload
 | `FAKE_LLM` | off | `1` = canned responses, no model download — full-pipeline demo/dev mode |
 | `N_CTX` | `8192` | Context window |
 | `N_THREADS` | auto | CPU threads for inference |
+| `N_GPU_LAYERS` | `0` | Model layers offloaded to GPU (`-1` = all; needs the CUDA build, see `Dockerfile.gpu`) |
 | `MAX_WEB_SOURCES` | `8` | Web pages fetched during research |
 | `MAX_WIKI_SOURCES` | `2` | Wikipedia articles fetched |
 

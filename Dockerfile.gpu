@@ -1,0 +1,45 @@
+# GPU image: llama-cpp-python compiled with CUDA. Needs an NVIDIA GPU and
+# the NVIDIA Container Toolkit on the host. Build & run with:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# The plain `docker compose up` (Dockerfile) stays CPU-only.
+
+# --- Stage 1: compile llama-cpp-python with CUDA kernels -------------------
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev build-essential cmake git \
+    && rm -rf /var/lib/apt/lists/*
+
+# all-major: build kernels for every mainstream GPU architecture, since the
+# build machine's GPU (if any) is not visible during `docker build`.
+ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=all-major"
+RUN pip3 wheel --no-cache-dir --wheel-dir /wheels "llama-cpp-python>=0.3.2"
+
+# --- Stage 2: runtime ------------------------------------------------------
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+# fonts-dejavu-core: Unicode font for PDF export.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+COPY --from=build /wheels /wheels
+RUN pip3 install --no-cache-dir /wheels/*.whl \
+    && pip3 install --no-cache-dir -r requirements.txt \
+    && rm -rf /wheels
+
+COPY backend ./backend
+COPY frontend ./frontend
+
+ENV MODELS_DIR=/data/models
+# Offload the whole model to the GPU by default.
+ENV N_GPU_LAYERS=-1
+VOLUME /data/models
+
+EXPOSE 8000
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

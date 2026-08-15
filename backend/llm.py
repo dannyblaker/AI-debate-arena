@@ -14,7 +14,7 @@ import re
 import time
 from typing import Iterator
 
-from .config import FAKE_LLM, N_CTX, N_THREADS
+from .config import FAKE_LLM, N_CTX, N_GPU_LAYERS, N_THREADS
 
 
 class LLM:
@@ -25,6 +25,7 @@ class LLM:
             model_path=str(model_path),
             n_ctx=N_CTX,
             n_threads=N_THREADS,
+            n_gpu_layers=N_GPU_LAYERS,
             verbose=False,
         )
 
