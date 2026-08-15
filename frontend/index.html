@@ -10,7 +10,7 @@
 <body>
   <header>
     <h1>🎙️ AI Debate Arena</h1>
-    <p class="tagline">Two AIs argue. Three AI judges decide. One local model runs them all.</p>
+    <p class="tagline">Two AIs argue. One AI judge decides. One local model runs them all.</p>
   </header>
 
   <!-- ============ SETUP VIEW ============ -->
@@ -95,7 +95,7 @@
     </section>
 
     <section id="judging-panel" hidden>
-      <h2 class="section-title">⚖️ The Judges' Ballots</h2>
+      <h2 class="section-title">⚖️ The Judge's Ballot</h2>
       <div id="judges" class="judges-grid"></div>
     </section>
 
@@ -117,6 +117,8 @@
 
     <p id="status-line" class="hint"></p>
   </main>
+
+  <button id="jump-btn" hidden>↓ Jump to latest</button>
 
   <script src="app.js"></script>
 </body>

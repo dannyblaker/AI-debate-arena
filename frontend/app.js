@@ -248,29 +248,31 @@ function renderTranscript() {
     div.id = "current-turn";
     box.appendChild(div);
   }
-  scrollToBottom();
+  updateJumpBtn();
 }
 
 function appendToken() {
   const div = document.querySelector("#current-turn .turn-text");
   if (div && state.current) {
     div.textContent = state.current.text;
-    scrollToBottom();
+    updateJumpBtn();
   } else {
     renderTranscript();
   }
 }
 
-let lastScroll = 0;
-function scrollToBottom() {
-  const now = Date.now();
-  if (now - lastScroll < 150) return;
-  lastScroll = now;
-  // Only auto-scroll if the user is already near the bottom.
-  const nearBottom = window.innerHeight + window.scrollY >
-    document.body.scrollHeight - 250;
-  if (nearBottom) window.scrollTo({ top: document.body.scrollHeight });
+/* The page never scrolls on its own — the reader scrolls freely while text
+   streams in. A floating button offers a jump to the newest text instead. */
+const jumpBtn = $("jump-btn");
+function updateJumpBtn() {
+  const streaming = state && state.current;
+  const atBottom = window.innerHeight + window.scrollY >=
+    document.body.scrollHeight - 200;
+  jumpBtn.hidden = !streaming || atBottom;
 }
+jumpBtn.addEventListener("click", () =>
+  window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
+window.addEventListener("scroll", updateJumpBtn, { passive: true });
 
 function renderJudges() {
   const started = state.judges.some((j) => j.status !== "waiting");
@@ -325,11 +327,12 @@ function renderVerdict() {
   } else {
     banner.textContent = "🤝 It's a tie!";
   }
+  const ballotsLine = state.judges.length > 1
+    ? `Ballots — PRO ${v.ballots_won.pro} · CON ${v.ballots_won.con} &nbsp;|&nbsp; `
+    : "";
   $("verdict-detail").innerHTML =
-    `${escapeHtml(capitalize(v.method))}.<br>` +
-    `Ballots — PRO ${v.ballots_won.pro} · CON ${v.ballots_won.con} &nbsp;|&nbsp; ` +
+    `${escapeHtml(capitalize(v.method))}.<br>` + ballotsLine +
     `Total points — PRO ${v.totals.pro} · CON ${v.totals.con} (of ${state.judges.length * 100})`;
-  scrollToBottom();
 }
 
 function escapeHtml(s) {

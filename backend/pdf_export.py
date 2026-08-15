@@ -80,7 +80,8 @@ def build_pdf(state: dict) -> bytes:
     judges = state.get("judges", [])
     if any(j.get("ballot") for j in judges):
         pdf.add_page()
-        pdf.heading("Judges' Ballots (100-point scale)", 16)
+        pdf.heading("Judge's Ballot (100-point scale)" if len(judges) == 1
+                    else "Judges' Ballots (100-point scale)", 16)
         for j in judges:
             ballot = j.get("ballot")
             if not ballot:
@@ -107,10 +108,11 @@ def build_pdf(state: dict) -> bytes:
         else:
             headline = f"Winner: {SIDE_NAMES[winner]} — {verdict['method']}."
         pdf.body(headline, 12, "B")
-        pdf.body(
-            f"Combined points — PRO: {verdict['totals']['pro']}"
-            f" · CON: {verdict['totals']['con']}   |   Ballots — PRO: "
-            f"{verdict['ballots_won']['pro']} · CON: {verdict['ballots_won']['con']}",
-            10)
+        points = (f"Total points — PRO: {verdict['totals']['pro']}"
+                  f" · CON: {verdict['totals']['con']}")
+        if len(judges) > 1:
+            points += (f"   |   Ballots — PRO: {verdict['ballots_won']['pro']}"
+                       f" · CON: {verdict['ballots_won']['con']}")
+        pdf.body(points, 10)
 
     return bytes(pdf.output())

@@ -265,7 +265,7 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
             transcript.append(entry)
             emit("turn_end", **entry)
 
-        emit("phase", phase="judging", message="The judges deliberate…")
+        emit("phase", phase="judging", message="The judge deliberates…")
         ballots = []
         for judge in judging.JUDGES:
             if stop.is_set():

@@ -1,8 +1,8 @@
 # 🎙️ AI Debate Arena
 
-Two AIs debate any topic you choose. Three neutral AI judges score the debate
-on a 100-point ballot and declare a winner. Everything — both debaters and all
-three judges — runs on a **single local LLM** (a GGUF model from HuggingFace,
+Two AIs debate any topic you choose. A neutral AI judge scores the debate
+on a 100-point ballot and declares a winner. Everything — both debaters and
+the judge — runs on a **single local LLM** (a GGUF model from HuggingFace,
 via `llama.cpp`), with live web research feeding the debaters through a RAG
 pipeline. The whole thing runs with one command:
 
@@ -25,8 +25,8 @@ topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
         └────────── transcript ───────────┘
                         │
                         ▼
-        3 AI judges (logician / policy analyst / rhetorician)
-        100-point ballots: Content 30 · Rebuttal 25 · Style 25 · Organization 20
+        1 AI judge (a neutral debate adjudicator)
+        100-point ballot:  Content 30 · Rebuttal 25 · Style 25 · Organization 20
                         │
                         ▼
               verdict + PDF export
@@ -48,9 +48,9 @@ topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
 4. **Debate** — classic format, streamed live to the browser token by token:
    openings (PRO, CON) → alternating rebuttal rounds → closings (CON, then PRO
    gets the final word). The debaters are instructed to cite sources inline.
-5. **Judging** — three judges with distinct neutral personas each score both
-   sides per criterion (JSON output is grammar-constrained by llama.cpp).
-6. **Verdict** — winner by majority of ballots, tie-broken on total points.
+5. **Judging** — a neutral judge scores both sides per criterion (JSON
+   output is grammar-constrained by llama.cpp).
+6. **Verdict** — winner by total points on the judge's ballot.
    Export the full transcript, ballots and verdict as a PDF.
 
 ## Models
@@ -110,7 +110,7 @@ uvicorn backend.main:app --reload
 backend/
   main.py            FastAPI app, WebSocket live stream, REST API
   debate.py          pipeline orchestration + debater prompting
-  judging.py         judge personas, 100-point ballot, tally
+  judging.py         judge persona, 100-point ballot, tally
   research.py        DuckDuckGo/Wikipedia scraping
   rag.py             chunking + BM25 retrieval
   models_registry.py model catalog, RAM-aware quant selection, downloads

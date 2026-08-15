@@ -1,4 +1,4 @@
-"""Three neutral AI judges scoring the debate on a 100-point ballot."""
+"""A neutral AI judge scoring the debate on a 100-point ballot."""
 from __future__ import annotations
 
 import json
@@ -6,30 +6,14 @@ import re
 
 JUDGES = [
     {
-        "id": "logician",
-        "name": "Judge A · The Logician",
+        "id": "judge",
+        "name": "The Judge",
         "persona": (
-            "a professor of formal logic who prizes valid reasoning, internal "
-            "consistency and quality of evidence, and who penalizes logical "
-            "fallacies, unsupported claims and appeals to emotion"
-        ),
-    },
-    {
-        "id": "analyst",
-        "name": "Judge B · The Policy Analyst",
-        "persona": (
-            "a pragmatic policy analyst who prizes concrete evidence, "
-            "real-world impacts and feasibility, and who rewards debaters who "
-            "engage honestly with the strongest version of the opposing case"
-        ),
-    },
-    {
-        "id": "rhetorician",
-        "name": "Judge C · The Rhetorician",
-        "persona": (
-            "a professor of rhetoric who prizes persuasion, narrative "
-            "structure, clarity and command of language, and who rewards "
-            "memorable framing and audience awareness"
+            "a veteran debate adjudicator who prizes valid reasoning, "
+            "concrete evidence and real-world feasibility as much as "
+            "persuasion, clarity and command of language, and who penalizes "
+            "logical fallacies, unsupported claims and failure to engage "
+            "with the strongest version of the opposing case"
         ),
     },
 ]
@@ -177,7 +161,8 @@ def tally(ballots: list[dict]) -> dict:
 
     if ballots_won["pro"] != ballots_won["con"]:
         winner = "pro" if ballots_won["pro"] > ballots_won["con"] else "con"
-        method = f"won {max(ballots_won.values())} of {len(ballots)} judge ballots"
+        method = ("won on the judge's ballot" if len(ballots) == 1 else
+                  f"won {max(ballots_won.values())} of {len(ballots)} judge ballots")
     elif totals["pro"] != totals["con"]:
         winner = "pro" if totals["pro"] > totals["con"] else "con"
         method = "won on total points after split ballots"
