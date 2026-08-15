@@ -92,21 +92,43 @@ def _clean_scores(raw: dict) -> dict:
 
 
 def judge_debate(llm, judge: dict, topic: str, transcript: list[dict]) -> dict:
-    """Return a ballot: per-criterion scores, totals, winner and reasoning."""
+    """Return a ballot: per-criterion scores, totals, winner and reasoning.
+
+    Judging happens in two steps: a free-prose deliberation comparing the
+    speakers, then a JSON ballot grounded in that deliberation. Going
+    straight to numbers invites lazy, undifferentiated scores (small models
+    tend to echo the criterion maxima for both sides)."""
     system = (
         f"You are {judge['name']}, {judge['persona']}. You are a strictly "
-        "neutral judge of a formal debate. You have no personal opinion on the "
-        "motion; you score only what was said in the transcript. Speaker PRO "
-        "argued FOR the motion, speaker CON argued AGAINST it."
+        "neutral judge of a formal debate. You have no personal opinion on "
+        "the motion; you score only what was said in the transcript. Speaker "
+        "PRO argued that the motion is true, speaker CON argued that it is "
+        "false. Repetition of earlier speeches, failure to engage with the "
+        "opponent's actual points, and arguing the wrong side must all be "
+        "punished heavily."
     )
+    transcript_text = _format_transcript(topic, transcript)
+
+    deliberation = llm.chat(
+        [{"role": "system", "content": system},
+         {"role": "user", "content":
+          transcript_text
+          + "\n\nBefore scoring, deliberate as a judge. In under 150 words, "
+          "compare the two speakers concretely: who made the stronger "
+          "arguments, who engaged more directly with the other's points, who "
+          "was more persuasive, and who was better organised. Name at least "
+          "two specific differences between PRO and CON."}],
+        max_tokens=300, temperature=0.4).strip()
+
     user = (
-        _format_transcript(topic, transcript)
-        + "\n\nScore each speaker on this 100-point ballot:\n"
+        transcript_text
+        + "\n\nYOUR DELIBERATION NOTES:\n" + deliberation
+        + "\n\nNow score each speaker on this 100-point ballot:\n"
         + _criteria_text()
         + "\n\nBe a discerning, critical grader: near-maximum scores should be "
-        "rare, and your scores must reflect real differences between the two "
-        "speakers — do not give both sides identical scores on a criterion "
-        "unless they truly performed equally."
+        "rare, and your scores must reflect the differences named in your "
+        "deliberation notes — do not give both sides identical scores on a "
+        "criterion unless they truly performed equally."
         + "\n\nRespond with ONLY a JSON object in exactly this shape:\n"
         '{"pro": {"content": 0, "rebuttal": 0, "style": 0, "organization": 0},\n'
         ' "con": {"content": 0, "rebuttal": 0, "style": 0, "organization": 0},\n'

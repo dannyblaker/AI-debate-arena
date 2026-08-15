@@ -6,6 +6,7 @@ debaters fall back on the model's own knowledge.
 """
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from typing import Callable
@@ -25,6 +26,25 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
 }
 MAX_DOC_CHARS = 16_000
+
+# Search results that are ads or click-tracking redirects, not articles.
+AD_URL_MARKERS = ("bing.com/aclick", "duckduckgo.com/y.js", "/aclk?",
+                  "googleadservices", "doubleclick.net", "syndicatedsearch")
+
+
+def _clean_title(raw_title: str, html: str) -> str:
+    """Prefer the page's own <title>; otherwise strip the search-engine
+    breadcrumb junk some results carry ('www.site.com › news › 2026Actual
+    headline...')."""
+    try:
+        meta = trafilatura.extract_metadata(html)
+        if meta and meta.title:
+            return meta.title.strip()[:150]
+    except Exception:
+        pass
+    t = re.sub(r"^(?:[\w.-]+\s*›\s*)+", "", raw_title or "").strip()
+    t = re.sub(r"^\d{4}(?:/\d{2}/\d{2})?\s*", "", t)
+    return (t or raw_title or "")[:150]
 
 
 @dataclass
@@ -77,12 +97,16 @@ def _web_docs(topic: str, emit_status: Callable[[str], None],
         title = res.get("title") or url
         if not url:
             continue
+        if any(marker in url for marker in AD_URL_MARKERS):
+            emit_status(f"Skipped (ad/redirect): {title[:80]}")
+            continue
         try:
             r = requests.get(url, headers=HEADERS, timeout=12)
             r.raise_for_status()
             text = trafilatura.extract(r.text, url=url) or ""
             if len(text) > 500:
-                docs.append(Doc(title, url, text.strip()[:MAX_DOC_CHARS]))
+                docs.append(Doc(_clean_title(title, r.text), url,
+                                text.strip()[:MAX_DOC_CHARS]))
             else:
                 emit_status(f"Skipped (too little text): {title}")
         except Exception:

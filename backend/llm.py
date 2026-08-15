@@ -64,7 +64,7 @@ class FakeLLM:
 
     def _topic(self, messages) -> str:
         for m in messages:
-            hit = re.search(r'motion:\s*"([^"]+)"', m.get("content", ""))
+            hit = re.search(r'motion[^:"]*:\s*"([^"]+)"', m.get("content", ""))
             if hit:
                 return hit.group(1)
         return "the motion"

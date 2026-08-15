@@ -5,6 +5,8 @@ through an `emit(type, **data)` callback supplied by the manager in main.py.
 """
 from __future__ import annotations
 
+import difflib
+import re
 import threading
 from dataclasses import dataclass
 
@@ -18,8 +20,10 @@ DEFAULT_PERSONALITY = "A confident, articulate professional debater."
 
 PHASE_TASKS = {
     "opening": (
-        "Deliver your OPENING STATEMENT: frame the motion on your terms and "
-        "present your two or three strongest arguments. Under 280 words."
+        "Deliver your OPENING STATEMENT: begin with one unambiguous sentence "
+        "stating your position on the motion, then frame the motion on your "
+        "terms and present your two or three strongest arguments. Under 280 "
+        "words."
     ),
     "rebuttal": (
         "Deliver your REBUTTAL: directly attack your opponent's most recent "
@@ -62,22 +66,47 @@ def build_schedule(rounds: int) -> list[dict]:
     return schedule
 
 
+def _stance(side: str) -> str:
+    """Unambiguous statement of what this side must argue. Spelled out for
+    both statement- and question-phrased motions, because a bare 'argue FOR
+    the motion' is easily misread (especially by small models) as 'argue for
+    the thing the motion is about'."""
+    if side == "pro":
+        return (
+            "You are the PROPOSITION (PRO). You AGREE with the motion and "
+            "argue that it is TRUE. If the motion is phrased as a question, "
+            "your answer is emphatically YES."
+        )
+    return (
+        "You are the OPPOSITION (CON). You DISAGREE with the motion and "
+        "argue that it is FALSE. If the motion is phrased as a question, "
+        "your answer is emphatically NO."
+    )
+
+
 def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
                       index: ResearchIndex) -> list[dict]:
     side = turn["speaker"]
-    stance = "FOR" if side == "pro" else "AGAINST"
     personality = (cfg.pro_personality if side == "pro" else cfg.con_personality) \
         .strip() or DEFAULT_PERSONALITY
 
     system = (
-        f'You are a world-class competitive debater and subject-matter expert. '
-        f'You are debating the motion: "{cfg.topic}".\n'
-        f"You argue {stance} the motion — always. Never switch sides, never "
-        "concede the debate, never break character.\n"
+        "You are a world-class competitive debater and subject-matter expert "
+        "taking part in a formal debate.\n"
+        f'The motion under debate: "{cfg.topic}"\n'
+        f"{_stance(side)}\n"
+        "Your opponent argues the exact opposite. Attack their arguments "
+        "directly; never agree with their side, never switch sides, never "
+        "concede the debate.\n"
         f"Your personality and speaking style: {personality}\n"
-        "Ground your claims in the RESEARCH EXCERPTS when they are relevant, "
-        "citing a source inline by the actual title shown in brackets above "
-        "its excerpt. Where research is thin, draw on your own expertise.\n"
+        "Ground your claims in the research excerpts you are given, citing a "
+        "source inline by the actual title shown in brackets above its "
+        "excerpt. Where research is thin, draw on your own expertise.\n"
+        "The research may lean toward one side. If it favours your opponent, "
+        "do not adopt its conclusions — use it to anticipate and rebut their "
+        "case, and reframe its facts to serve your side.\n"
+        "Never repeat or closely paraphrase sentences from earlier speeches "
+        "— every speech must be made of fresh material.\n"
         "Refer to the other debater only as 'my opponent'. Never use "
         "placeholders like [Your Name] or [Source Title].\n"
         "Speak in flowing spoken prose — no markdown, no headings, no bullet "
@@ -92,21 +121,79 @@ def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
         query = cfg.topic
     excerpts = index.format_excerpts(query, k=5)
 
-    if transcript:
-        history = "\n\n".join(f"--- {t['label']} ---\n{t['text']}"
-                              for t in transcript)
-        history_block = f"TRANSCRIPT SO FAR:\n\n{history}\n\n"
-    else:
-        history_block = "You are the first speaker.\n\n"
+    # Present the debate as a real conversation: the opponent's speeches are
+    # incoming ("user") messages, this debater's own speeches are its own
+    # previous ("assistant") replies. Models respond to conversation far more
+    # reliably than to a transcript pasted into a single prompt — this is
+    # what makes them engage instead of parroting the transcript back.
+    convo: list[dict] = []
 
-    user = (
-        f"RESEARCH EXCERPTS:\n\n{excerpts}\n\n"
-        + history_block
-        + f"It is now your turn ({turn['label']}). "
-        + PHASE_TASKS[turn["phase"]]
+    def add(role: str, content: str):
+        if convo and convo[-1]["role"] == role:
+            convo[-1]["content"] += "\n\n" + content
+        else:
+            convo.append({"role": role, "content": content})
+
+    for t in transcript:
+        if t["speaker"] == side:
+            add("assistant", t["text"])
+        else:
+            add("user", f"Your opponent delivered their {t['label']}:\n\n{t['text']}")
+
+    task = (
+        f"RESEARCH EXCERPTS you may cite:\n\n{excerpts}\n\n"
+        f"It is now your turn ({turn['label']}). {PHASE_TASKS[turn['phase']]}\n"
+        f"Remember your side: {_stance(side)}"
     )
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": user}]
+    add("user", task)
+
+    # Some chat templates behave oddly when the first non-system message is
+    # from the assistant; give the debater's own opening a moderator cue.
+    if convo[0]["role"] == "assistant":
+        convo.insert(0, {"role": "user",
+                         "content": "You have the floor for your opening statement."})
+
+    return [{"role": "system", "content": system}, *convo]
+
+
+def _clean_speech(text: str) -> str:
+    """Trim whitespace, drop leading decoration-only lines ('---' etc.) and
+    scrub name placeholders small models sometimes emit despite instructions."""
+    lines = text.strip().splitlines()
+    while lines and re.fullmatch(r"[-–—*_#=\s]*", lines[0]):
+        lines.pop(0)
+    text = "\n".join(lines).strip()
+    return re.sub(r"\[(?:your |my |opponent'?s? ?)?name\]|\[opponent\]",
+                  "my opponent", text, flags=re.IGNORECASE)
+
+
+def _too_similar(text: str, transcript: list[dict], threshold: float = 0.6) -> bool:
+    """True if the speech is mostly a copy of an earlier speech."""
+    lowered = text.lower()
+    return any(
+        difflib.SequenceMatcher(None, lowered, t["text"].lower()).ratio() > threshold
+        for t in transcript
+    )
+
+
+def _argued_wrong_side(llm, topic: str, side: str, text: str) -> bool:
+    """Ask the model to classify which side a speech actually argued.
+    Small models sometimes drift onto the opponent's side mid-debate,
+    especially when the research material is one-sided; this catches it."""
+    answer = llm.chat(
+        [{"role": "system", "content":
+          "You classify debate speeches. Reply with a single word: TRUE if "
+          "the speech argues the motion is true (answer yes), or FALSE if it "
+          "argues the motion is false (answer no)."},
+         {"role": "user", "content":
+          f'Motion: "{topic}"\n\nSpeech:\n{text[:2500]}\n\n'
+          "Which side does this speech argue? Reply with one word, TRUE or "
+          "FALSE."}],
+        max_tokens=4, temperature=0.0).strip().upper()
+    wrong = "FALSE" if side == "pro" else "TRUE"
+    right = "TRUE" if side == "pro" else "FALSE"
+    # Only regenerate on an unambiguous wrong-side verdict.
+    return wrong in answer and right not in answer
 
 
 def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
@@ -137,15 +224,44 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
         for turn in build_schedule(cfg.rounds):
             if stop.is_set():
                 raise StopRequested()
-            emit("turn_start", **turn)
             messages = _debater_messages(cfg, turn, transcript, index)
             text = ""
-            for token in llm.chat_stream(messages, max_tokens=600, temperature=0.8):
-                if stop.is_set():
-                    raise StopRequested()
-                text += token
-                emit("token", speaker=turn["speaker"], text=token)
-            entry = {**turn, "text": text.strip()}
+            for attempt in range(2):
+                emit("turn_start", **turn)
+                text = ""
+                for token in llm.chat_stream(messages, max_tokens=600,
+                                             temperature=0.8 + 0.2 * attempt):
+                    if stop.is_set():
+                        raise StopRequested()
+                    text += token
+                    emit("token", speaker=turn["speaker"], text=token)
+                text = _clean_speech(text)
+                if FAKE_LLM or attempt == 1:
+                    break
+                # Two failure modes of small models, each worth one retry:
+                # echoing an earlier speech, or drifting onto the wrong side.
+                if _too_similar(text, transcript):
+                    problem = ("That speech repeated an earlier speech almost "
+                               "word for word, which is not allowed. Deliver "
+                               "a completely different speech in fresh words, "
+                               "engaging directly with your opponent's latest "
+                               "points.")
+                    emit("status", message=f"{turn['label']} repeated earlier "
+                         "material — regenerating.")
+                elif _argued_wrong_side(llm, cfg.topic, turn["speaker"], text):
+                    problem = ("That speech argued the WRONG SIDE of the "
+                               f"motion. {_stance(turn['speaker'])} Rewrite "
+                               "your speech so every argument supports YOUR "
+                               "side and attacks your opponent's.")
+                    emit("status", message=f"{turn['label']} argued the wrong "
+                         "side — regenerating.")
+                else:
+                    break
+                messages = messages + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": problem},
+                ]
+            entry = {**turn, "text": text}
             transcript.append(entry)
             emit("turn_end", **entry)
 

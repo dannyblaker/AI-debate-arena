@@ -34,7 +34,9 @@ topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
 
 1. **Setup** — enter a motion, pick a model, optionally give each debater a
    personality ("proper and Oxford-like", "sassy and sarcastic", …) and choose
-   the number of rebuttal rounds.
+   the number of rebuttal rounds. Motions work best phrased as claims
+   ("X is true"), the way real debate motions are; questions are also
+   handled (PRO argues yes, CON argues no).
 2. **Model** — on *Begin Debate* the app checks available RAM (respecting
    container memory limits) and downloads the highest-quality quantization of
    the chosen model that fits in memory. Already-downloaded models are flagged
