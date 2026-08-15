@@ -1,0 +1,14 @@
+services:
+  ai-debate:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Downloaded GGUF models persist here between runs.
+      - ./models:/data/models
+    environment:
+      - MODELS_DIR=/data/models
+      # Uncomment to exercise the whole pipeline with canned responses
+      # (no model download, instant output) — useful for a quick demo:
+      # - FAKE_LLM=1
+    restart: unless-stopped

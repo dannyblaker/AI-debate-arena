@@ -1,0 +1,10 @@
+models/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.git/
+.idea/
+.vscode/
+README.md
+instructions.md

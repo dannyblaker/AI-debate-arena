@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Debate Arena</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎙️</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>🎙️ AI Debate Arena</h1>
+    <p class="tagline">Two AIs argue. Three AI judges decide. One local model runs them all.</p>
+  </header>
+
+  <!-- ============ SETUP VIEW ============ -->
+  <main id="setup-view">
+    <section class="card">
+      <h2>1 · The Motion</h2>
+      <input id="topic" type="text" maxlength="500"
+             placeholder="e.g. Are driverless cars safe enough for public roads?">
+      <div class="examples">
+        Try:
+        <button class="example-btn" data-topic="Are driverless cars safe enough for public roads?">driverless cars</button>
+        <button class="example-btn" data-topic="Is the Australian government's current overhaul of the NDIS moving too far and too fast at the expense of vulnerable citizens?">NDIS overhaul</button>
+        <button class="example-btn" data-topic="Should social media be banned for children under 16?">social media ban</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2 · The Model</h2>
+      <p class="hint" id="ram-info">Detecting available memory…</p>
+      <div id="model-list"></div>
+    </section>
+
+    <section class="card">
+      <h2>3 · The Debaters</h2>
+      <div class="debater-grid">
+        <div class="debater-config pro">
+          <h3>FOR the motion <span class="side-tag pro-tag">PRO</span></h3>
+          <textarea id="pro-personality" maxlength="1000" rows="3"
+            placeholder="Personality &amp; style — e.g. proper and Oxford-like, quotes philosophers, devastatingly polite"></textarea>
+        </div>
+        <div class="debater-config con">
+          <h3>AGAINST the motion <span class="side-tag con-tag">CON</span></h3>
+          <textarea id="con-personality" maxlength="1000" rows="3"
+            placeholder="Personality &amp; style — e.g. sassy and sarcastic, loves zingers, allergic to nonsense"></textarea>
+        </div>
+      </div>
+      <div class="rounds-row">
+        <label for="rounds">Rebuttal rounds:</label>
+        <select id="rounds">
+          <option value="1">1</option>
+          <option value="2" selected>2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+      </div>
+    </section>
+
+    <div class="begin-row">
+      <button id="begin-btn" class="primary big">Begin Debate</button>
+      <p id="setup-error" class="error" hidden></p>
+    </div>
+  </main>
+
+  <!-- ============ ARENA VIEW ============ -->
+  <main id="arena-view" hidden>
+    <div id="topic-banner"></div>
+
+    <ol id="stepper">
+      <li data-step="model">Model</li>
+      <li data-step="research">Research</li>
+      <li data-step="debate">Debate</li>
+      <li data-step="judging">Judging</li>
+      <li data-step="done">Verdict</li>
+    </ol>
+
+    <section id="download-panel" class="card" hidden>
+      <h2>Downloading model</h2>
+      <div class="progress-track"><div id="download-bar" class="progress-fill"></div></div>
+      <p id="download-label" class="hint"></p>
+    </section>
+
+    <section id="research-panel" class="card" hidden>
+      <h2>📚 Research</h2>
+      <p id="research-summary" class="hint">Collecting articles and encyclopedia entries…</p>
+      <ul id="sources"></ul>
+    </section>
+
+    <section id="debate-panel" hidden>
+      <div id="transcript"></div>
+    </section>
+
+    <section id="judging-panel" hidden>
+      <h2 class="section-title">⚖️ The Judges' Ballots</h2>
+      <div id="judges" class="judges-grid"></div>
+    </section>
+
+    <section id="verdict-panel" hidden>
+      <div id="verdict-banner"></div>
+      <div id="verdict-detail"></div>
+    </section>
+
+    <section id="error-panel" class="card error-card" hidden>
+      <h2>Something went wrong</h2>
+      <p id="error-message"></p>
+    </section>
+
+    <div class="arena-actions">
+      <button id="stop-btn" class="danger" hidden>■ Stop debate</button>
+      <a id="pdf-btn" class="button" href="/api/export/pdf" download hidden>⬇ Export PDF transcript</a>
+      <button id="reset-btn" hidden>↻ New debate</button>
+    </div>
+
+    <p id="status-line" class="hint"></p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

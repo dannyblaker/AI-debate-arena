@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+llama-cpp-python>=0.3.2
+huggingface_hub>=0.26
+psutil>=5.9
+ddgs>=9.0
+trafilatura>=1.12
+rank-bm25>=0.2.2
+fpdf2>=2.7.9
+requests>=2.32
