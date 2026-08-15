@@ -115,6 +115,7 @@ function handleEvent(ev) {
     case "research_source": renderResearch(); break;
     case "research_done": renderResearch(); break;
     case "judge_start": renderJudges(); break;
+    case "judge_criterion": renderJudges(); break;
     case "judge_result": renderJudges(); break;
     case "verdict": renderVerdict(); break;
     case "error": renderChrome(); break;
@@ -142,6 +143,11 @@ function applyEvent(ev) {
       break;
     case "judge_start":
       s.judges.forEach((j) => { if (j.id === ev.judge_id) j.status = "deliberating"; });
+      break;
+    case "judge_criterion":
+      s.judges.forEach((j) => {
+        if (j.id === ev.judge_id) j.partial[ev.criterion] = ev.result;
+      });
       break;
     case "judge_result":
       s.judges.forEach((j) => {
@@ -284,15 +290,32 @@ function renderJudges() {
     const card = document.createElement("div");
     card.className = "judge-card";
     let html = `<h3>${j.name}</h3>`;
+    const partial = j.partial || {};
     if (j.status === "waiting") {
       html += `<div class="judge-status">waiting</div>`;
-    } else if (j.status === "deliberating") {
-      html += `<div class="judge-status deliberating">deliberating</div>`;
-    } else if (j.ballot) {
-      const b = j.ballot;
-      html += `<div class="judge-status">ballot in</div>`;
+    } else {
+      if (j.status === "deliberating") {
+        const next = CRITERIA.find((c) => !partial[c.key]);
+        html += `<div class="judge-status deliberating">${
+          next ? `scoring ${next.label}` : "writing summary"}</div>`;
+      } else {
+        html += `<div class="judge-status">ballot in</div>`;
+      }
       for (const c of CRITERIA) {
-        const p = b.scores.pro[c.key], q = b.scores.con[c.key];
+        let p, q, rp, rq;
+        if (j.ballot) {
+          p = j.ballot.scores.pro[c.key];
+          q = j.ballot.scores.con[c.key];
+          rp = (j.ballot.reasons?.pro || {})[c.key];
+          rq = (j.ballot.reasons?.con || {})[c.key];
+        } else if (partial[c.key]) {
+          p = partial[c.key].pro.score;
+          q = partial[c.key].con.score;
+          rp = partial[c.key].pro.reasoning;
+          rq = partial[c.key].con.reasoning;
+        } else {
+          continue;
+        }
         html += `
           <div class="crit-row">
             <div class="crit-name"><span>${c.label}</span><span>${p} · ${q} / ${c.max}</span></div>
@@ -300,12 +323,20 @@ function renderJudges() {
               <div class="crit-bar pro"><div style="width:${(100 * p) / c.max}%"></div></div>
               <div class="crit-bar con"><div style="width:${(100 * q) / c.max}%"></div></div>
             </div>
+            ${rp ? `<div class="crit-reason pro-reason"><b>PRO ${p}/${c.max}</b> — ${escapeHtml(rp)}</div>` : ""}
+            ${rq ? `<div class="crit-reason con-reason"><b>CON ${q}/${c.max}</b> — ${escapeHtml(rq)}</div>` : ""}
           </div>`;
       }
-      html += `<div class="judge-total">
-        <span class="pro-score">PRO ${b.totals.pro}</span>
-        <span class="con-score">CON ${b.totals.con}</span></div>`;
-      if (b.reasoning) html += `<div class="judge-reasoning">${escapeHtml(b.reasoning)}</div>`;
+      if (j.ballot) {
+        const b = j.ballot;
+        html += `<div class="judge-total">
+          <span class="pro-score">PRO ${b.totals.pro}</span>
+          <span class="con-score">CON ${b.totals.con}</span></div>`;
+        if (b.summary) {
+          html += `<div class="judge-summary">
+            <h4>The Judge's Summary</h4>${escapeHtml(b.summary)}</div>`;
+        }
+      }
     }
     card.innerHTML = html;
     grid.appendChild(card);

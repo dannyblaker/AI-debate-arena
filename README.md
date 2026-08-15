@@ -26,7 +26,8 @@ topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
                         │
                         ▼
         1 AI judge (a neutral debate adjudicator)
-        100-point ballot:  Content 30 · Rebuttal 25 · Style 25 · Organization 20
+        100-point ballot, 8 criteria: evidence, logic, refutation,
+        defense, persuasion, rhetoric, structure, clarity
                         │
                         ▼
               verdict + PDF export
@@ -48,8 +49,10 @@ topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
 4. **Debate** — classic format, streamed live to the browser token by token:
    openings (PRO, CON) → alternating rebuttal rounds → closings (CON, then PRO
    gets the final word). The debaters are instructed to cite sources inline.
-5. **Judging** — a neutral judge scores both sides per criterion (JSON
-   output is grammar-constrained by llama.cpp).
+5. **Judging** — a neutral judge scores each of 8 fine-grained criteria in
+   its own focused pass, writing separate reasoning for each side before
+   committing to a score (JSON output is grammar-constrained by llama.cpp),
+   then writes a closing summary of what each side did well and less well.
 6. **Verdict** — winner by total points on the judge's ballot.
    Export the full transcript, ballots and verdict as a PDF.
 

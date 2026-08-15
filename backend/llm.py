@@ -1,7 +1,7 @@
 """Thin wrapper around llama-cpp-python.
 
-One model instance is shared by every AI in the app (both debaters and all
-three judges); calls are strictly sequential. A fake implementation is
+One model instance is shared by every AI in the app (both debaters and the
+judge); calls are strictly sequential. A fake implementation is
 available (FAKE_LLM=1) so the whole pipeline can be exercised without
 downloading a model.
 """
@@ -73,21 +73,32 @@ class FakeLLM:
                     json_mode=False) -> Iterator[str]:
         seed = int(hashlib.md5(json.dumps(messages).encode()).hexdigest(), 16)
         rng = random.Random(seed)
+        prompt = messages[-1].get("content", "") if messages else ""
         if json_mode:
-            ballot = {
+            # A per-criterion judging call: reasoning + score for each side.
+            hit = re.search(r"integer from 0 to (\d+)", prompt)
+            mx = int(hit.group(1)) if hit else 20
+            result = {
                 side: {
-                    "content": rng.randint(18, 30),
-                    "rebuttal": rng.randint(14, 25),
-                    "style": rng.randint(15, 25),
-                    "organization": rng.randint(12, 20),
+                    "reasoning": (
+                        f"{side.upper()} handled this criterion "
+                        f"{rng.choice(['capably', 'unevenly', 'strongly'])}; "
+                        "this is a canned evaluation from the fake LLM used "
+                        "in development mode."),
+                    "score": rng.randint(mx // 2, mx),
                 }
                 for side in ("pro", "con")
             }
-            ballot["reasoning"] = (
-                "Both sides argued competently; this is a canned ballot from "
-                "the fake LLM used in development mode."
+            text = json.dumps(result)
+        elif "YOUR COMPLETED SCORECARD" in prompt:
+            text = (
+                "Weighing my scorecard as a whole, PRO built the more "
+                "evidence-driven case while CON pressed the sharper "
+                "rebuttals; both sides left some attacks unanswered. This "
+                "is a canned judge's summary from the fake LLM used in "
+                "development mode, so my ultimate finding simply follows "
+                "the canned scores above."
             )
-            text = json.dumps(ballot)
         else:
             topic = self._topic(messages)
             openers = [

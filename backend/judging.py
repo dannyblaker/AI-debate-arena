@@ -1,4 +1,11 @@
-"""A neutral AI judge scoring the debate on a 100-point ballot."""
+"""A neutral AI judge scoring the debate on a 100-point ballot.
+
+The ballot is broken into eight small criteria. Each criterion is scored in
+its own focused LLM call that must produce written reasoning for each
+speaker *before* the score — small models grade far better when they argue
+the mark first. Afterwards the judge writes a free-prose summary statement
+reviewing the whole scorecard and justifying the final result.
+"""
 from __future__ import annotations
 
 import json
@@ -18,17 +25,32 @@ JUDGES = [
     },
 ]
 
-# The 100-point ballot: criterion key, label, maximum points.
+# The 100-point ballot: eight fine-grained criteria.
 CRITERIA = [
-    ("content", "Content & Evidence", 30),
-    ("rebuttal", "Refutation & Clash", 25),
-    ("style", "Style & Persuasion", 25),
-    ("organization", "Organization & Clarity", 20),
+    {"key": "evidence", "label": "Evidence & Sourcing", "max": 15,
+     "desc": "how well the speaker backs claims with concrete facts, "
+             "examples and cited sources rather than bare assertion"},
+    {"key": "logic", "label": "Logical Reasoning", "max": 15,
+     "desc": "the validity and internal consistency of the speaker's "
+             "arguments, and their freedom from logical fallacies"},
+    {"key": "refutation", "label": "Direct Refutation", "max": 15,
+     "desc": "how directly and effectively the speaker attacks the "
+             "opponent's actual arguments, rather than a strawman"},
+    {"key": "defense", "label": "Defense & Resilience", "max": 10,
+     "desc": "how well the speaker repairs and reinforces their own case "
+             "after the opponent's attacks on it"},
+    {"key": "persuasion", "label": "Persuasive Impact", "max": 15,
+     "desc": "how convincing the speaker's overall case would be to a "
+             "neutral, intelligent audience"},
+    {"key": "rhetoric", "label": "Language & Rhetoric", "max": 10,
+     "desc": "command of language, memorable framing and rhetorical craft"},
+    {"key": "structure", "label": "Structure & Signposting", "max": 10,
+     "desc": "clear organization and logical flow within each speech and "
+             "across the debate as a whole"},
+    {"key": "clarity", "label": "Clarity & Concision", "max": 10,
+     "desc": "how easy the speeches are to follow; repetition, waffle and "
+             "restating earlier speeches must cost points here"},
 ]
-
-
-def _criteria_text() -> str:
-    return "\n".join(f"- {key}: {label} (0-{mx} points)" for key, label, mx in CRITERIA)
 
 
 def _format_transcript(topic: str, transcript: list[dict]) -> str:
@@ -55,33 +77,102 @@ def _extract_json(text: str) -> dict:
     raise ValueError("unbalanced JSON object in response")
 
 
-def _clean_scores(raw: dict) -> dict:
-    scores = {}
+def _clean_criterion(raw: dict, mx: int) -> dict:
+    """Validate one criterion result: per-side reasoning + bounded score."""
+    out = {}
     for side in ("pro", "con"):
         side_raw = raw.get(side)
         if not isinstance(side_raw, dict):
-            raise ValueError(f"missing scores for '{side}'")
-        side_scores = {}
-        for key, _label, mx in CRITERIA:
-            value = side_raw.get(key)
-            if not isinstance(value, (int, float)):
-                # tolerate "18/30"-style strings
-                hit = re.match(r"\s*(\d+)", str(value or ""))
-                if not hit:
-                    raise ValueError(f"missing score {side}.{key}")
-                value = int(hit.group(1))
-            side_scores[key] = max(0, min(int(value), mx))
-        scores[side] = side_scores
-    return scores
+            raise ValueError(f"missing result for '{side}'")
+        value = side_raw.get("score")
+        if not isinstance(value, (int, float)):
+            # tolerate "12/15"-style strings
+            hit = re.match(r"\s*(\d+)", str(value or ""))
+            if not hit:
+                raise ValueError(f"missing score for '{side}'")
+            value = int(hit.group(1))
+        out[side] = {
+            "score": max(0, min(int(value), mx)),
+            "reasoning": str(side_raw.get("reasoning", "")).strip(),
+        }
+    return out
 
 
-def judge_debate(llm, judge: dict, topic: str, transcript: list[dict]) -> dict:
-    """Return a ballot: per-criterion scores, totals, winner and reasoning.
+def _score_criterion(llm, system: str, transcript_text: str, crit: dict) -> dict:
+    """One focused call: reason about both speakers on a single criterion,
+    then score it. Reasoning comes before the score in the JSON so the
+    model commits to an argument before committing to a number."""
+    user = (
+        transcript_text
+        + f"\n\nYou are scoring ONE criterion only: {crit['label']} "
+        f"(0 to {crit['max']} points) — {crit['desc']}.\n\n"
+        "For each speaker, write 2-3 sentences of reasoning evaluating them "
+        "on this criterion alone, citing specific moments from the "
+        "transcript, and only then award the score. Be a discerning, "
+        "critical grader: near-maximum scores should be rare, and identical "
+        "scores are only justified when the speakers truly performed "
+        "equally on this criterion.\n\n"
+        "Respond with ONLY a JSON object in exactly this shape:\n"
+        f'{{"pro": {{"reasoning": "2-3 sentences", '
+        f'"score": <integer from 0 to {crit["max"]}>}},\n'
+        f' "con": {{"reasoning": "2-3 sentences", '
+        f'"score": <integer from 0 to {crit["max"]}>}}}}'
+    )
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": user}]
 
-    Judging happens in two steps: a free-prose deliberation comparing the
-    speakers, then a JSON ballot grounded in that deliberation. Going
-    straight to numbers invites lazy, undifferentiated scores (small models
-    tend to echo the criterion maxima for both sides)."""
+    last_error = None
+    for _attempt in range(2):
+        text = llm.chat(messages, max_tokens=400, temperature=0.3, json_mode=True)
+        try:
+            return _clean_criterion(_extract_json(text), crit["max"])
+        except (ValueError, json.JSONDecodeError) as e:
+            last_error = e
+            messages.append({"role": "assistant", "content": text})
+            messages.append({"role": "user", "content":
+                             "That was not valid. Respond with ONLY the JSON "
+                             "object in the requested shape: reasoning "
+                             "strings and integer scores, no other text."})
+    raise RuntimeError(f"invalid ballot for '{crit['label']}': {last_error}")
+
+
+def _write_summary(llm, system: str, transcript_text: str, reasons: dict,
+                   scores: dict, totals: dict, winner: str) -> str:
+    """The judge's closing statement, grounded in the completed scorecard."""
+    card = []
+    for crit in CRITERIA:
+        card.append(f"{crit['label']} (max {crit['max']}):")
+        for side in ("pro", "con"):
+            card.append(f"  {side.upper()} {scores[side][crit['key']]} — "
+                        f"{reasons[side][crit['key']]}")
+    result_line = (
+        "the debate is a dead tie" if winner == "tie" else
+        f"{winner.upper()} wins, {totals['pro']} points to {totals['con']} "
+        f"for PRO and CON respectively")
+    user = (
+        transcript_text
+        + "\n\nYOUR COMPLETED SCORECARD:\n" + "\n".join(card)
+        + f"\n\nOn your scorecard {result_line}."
+        + "\n\nNow write your summary statement as the judge, in first "
+        "person, 200-300 words of flowing prose (no headings, no lists, no "
+        "score tallies). Explore the decisions behind your scores: what PRO "
+        "did well and did less well, what CON did well and did less well, "
+        "and finish with your ultimate finding and the justification for "
+        "it. Your finding must be consistent with your scorecard."
+    )
+    return llm.chat(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": user}],
+        max_tokens=600, temperature=0.5).strip()
+
+
+def judge_debate(llm, judge: dict, topic: str, transcript: list[dict],
+                 on_criterion=None) -> dict:
+    """Return a ballot: per-criterion scores and written reasoning for each
+    speaker, totals, winner, and a closing summary statement.
+
+    `on_criterion(crit, result)` is called after each criterion is scored,
+    so callers can stream partial ballots to the UI."""
     system = (
         f"You are {judge['name']}, {judge['persona']}. You are a strictly "
         "neutral judge of a formal debate. You have no personal opinion on "
@@ -93,49 +184,23 @@ def judge_debate(llm, judge: dict, topic: str, transcript: list[dict]) -> dict:
     )
     transcript_text = _format_transcript(topic, transcript)
 
-    deliberation = llm.chat(
-        [{"role": "system", "content": system},
-         {"role": "user", "content":
-          transcript_text
-          + "\n\nBefore scoring, deliberate as a judge. In under 150 words, "
-          "compare the two speakers concretely: who made the stronger "
-          "arguments, who engaged more directly with the other's points, who "
-          "was more persuasive, and who was better organised. Name at least "
-          "two specific differences between PRO and CON."}],
-        max_tokens=300, temperature=0.4).strip()
-
-    user = (
-        transcript_text
-        + "\n\nYOUR DELIBERATION NOTES:\n" + deliberation
-        + "\n\nNow score each speaker on this 100-point ballot:\n"
-        + _criteria_text()
-        + "\n\nBe a discerning, critical grader: near-maximum scores should be "
-        "rare, and your scores must reflect the differences named in your "
-        "deliberation notes — do not give both sides identical scores on a "
-        "criterion unless they truly performed equally."
-        + "\n\nRespond with ONLY a JSON object in exactly this shape:\n"
-        '{"pro": {"content": 0, "rebuttal": 0, "style": 0, "organization": 0},\n'
-        ' "con": {"content": 0, "rebuttal": 0, "style": 0, "organization": 0},\n'
-        ' "reasoning": "2-4 sentences explaining your scores"}'
-    )
-    messages = [{"role": "system", "content": system},
-                {"role": "user", "content": user}]
-
-    last_error = None
-    for attempt in range(2):
-        text = llm.chat(messages, max_tokens=600, temperature=0.3, json_mode=True)
+    scores = {"pro": {}, "con": {}}
+    reasons = {"pro": {}, "con": {}}
+    for crit in CRITERIA:
         try:
-            raw = _extract_json(text)
-            scores = _clean_scores(raw)
-            break
-        except (ValueError, json.JSONDecodeError) as e:
-            last_error = e
-            messages.append({"role": "assistant", "content": text})
-            messages.append({"role": "user", "content":
-                             "That was not valid. Respond with ONLY the JSON "
-                             "object, integer scores, no other text."})
-    else:
-        raise RuntimeError(f"{judge['name']} failed to produce a valid ballot: {last_error}")
+            result = _score_criterion(llm, system, transcript_text, crit)
+        except RuntimeError:
+            # A single bad criterion must not void the whole ballot; zero
+            # both sides equally and move on.
+            result = {side: {"score": 0, "reasoning":
+                             "The judge failed to produce a valid score for "
+                             "this criterion; both sides receive 0."}
+                      for side in ("pro", "con")}
+        for side in ("pro", "con"):
+            scores[side][crit["key"]] = result[side]["score"]
+            reasons[side][crit["key"]] = result[side]["reasoning"]
+        if on_criterion:
+            on_criterion(crit, result)
 
     totals = {side: sum(scores[side].values()) for side in ("pro", "con")}
     if totals["pro"] > totals["con"]:
@@ -144,9 +209,11 @@ def judge_debate(llm, judge: dict, topic: str, transcript: list[dict]) -> dict:
         winner = "con"
     else:
         winner = "tie"
-    reasoning = str(raw.get("reasoning", "")).strip()
-    return {"scores": scores, "totals": totals, "winner": winner,
-            "reasoning": reasoning}
+
+    summary = _write_summary(llm, system, transcript_text, reasons, scores,
+                             totals, winner)
+    return {"scores": scores, "reasons": reasons, "totals": totals,
+            "winner": winner, "summary": summary}
 
 
 def tally(ballots: list[dict]) -> dict:

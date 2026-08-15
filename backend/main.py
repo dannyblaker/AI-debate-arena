@@ -31,7 +31,7 @@ def _initial_state() -> dict:
         "transcript": [],
         "current": None,
         "judges": [{"id": j["id"], "name": j["name"], "status": "waiting",
-                    "ballot": None} for j in JUDGES],
+                    "partial": {}, "ballot": None} for j in JUDGES],
         "verdict": None,
         "error": None,
         "log": [],
@@ -87,6 +87,10 @@ class DebateManager:
             for j in s["judges"]:
                 if j["id"] == ev["judge_id"]:
                     j["status"] = "deliberating"
+        elif t == "judge_criterion":
+            for j in s["judges"]:
+                if j["id"] == ev["judge_id"]:
+                    j["partial"][ev["criterion"]] = ev["result"]
         elif t == "judge_result":
             for j in s["judges"]:
                 if j["id"] == ev["judge_id"]:
@@ -158,7 +162,7 @@ def api_models():
 def api_system():
     return {
         "available_ram_gb": round(models_registry.available_ram_bytes() / 1024**3, 1),
-        "criteria": [{"key": k, "label": lbl, "max": mx} for k, lbl, mx in CRITERIA],
+        "criteria": [{k: c[k] for k in ("key", "label", "max")} for c in CRITERIA],
     }
 
 

@@ -267,18 +267,37 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
 
         emit("phase", phase="judging", message="The judge deliberates…")
         ballots = []
+        n_criteria = len(judging.CRITERIA)
         for judge in judging.JUDGES:
             if stop.is_set():
                 raise StopRequested()
             emit("judge_start", judge_id=judge["id"], name=judge["name"])
+
+            scored = 0
+
+            def on_criterion(crit, result, judge=judge):
+                nonlocal scored
+                scored += 1
+                emit("judge_criterion", judge_id=judge["id"],
+                     criterion=crit["key"], result=result)
+                emit("status", message=f"Ballot: {crit['label']} scored "
+                                       f"({scored}/{n_criteria})")
+                if stop.is_set():
+                    raise StopRequested()
+
             try:
-                ballot = judging.judge_debate(llm, judge, cfg.topic, transcript)
+                ballot = judging.judge_debate(llm, judge, cfg.topic,
+                                              transcript, on_criterion)
+            except StopRequested:
+                raise
             except RuntimeError as e:
                 emit("status", message=str(e))
-                ballot = {"scores": {s: {k: 0 for k, _, _ in judging.CRITERIA}
-                                     for s in ("pro", "con")},
+                zeros = {c["key"]: 0 for c in judging.CRITERIA}
+                blanks = {c["key"]: "" for c in judging.CRITERIA}
+                ballot = {"scores": {s: dict(zeros) for s in ("pro", "con")},
+                          "reasons": {s: dict(blanks) for s in ("pro", "con")},
                           "totals": {"pro": 0, "con": 0}, "winner": "tie",
-                          "reasoning": "Ballot invalid; judge abstained."}
+                          "summary": "Ballot invalid; judge abstained."}
             ballots.append(ballot)
             emit("judge_result", judge_id=judge["id"], name=judge["name"],
                  ballot=ballot)

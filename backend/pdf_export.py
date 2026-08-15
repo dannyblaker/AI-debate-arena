@@ -87,16 +87,22 @@ def build_pdf(state: dict) -> bytes:
             if not ballot:
                 continue
             pdf.body(j["name"], 12, "B")
-            lines = []
-            for key, label, mx in CRITERIA:
-                lines.append(
-                    f"  {label} (max {mx}):  PRO {ballot['scores']['pro'][key]}"
-                    f"  ·  CON {ballot['scores']['con'][key]}")
-            lines.append(f"  TOTAL:  PRO {ballot['totals']['pro']}/100"
-                         f"  ·  CON {ballot['totals']['con']}/100")
-            pdf.body("\n".join(lines), 9.5)
-            if ballot.get("reasoning"):
-                pdf.body(f"Reasoning: {ballot['reasoning']}", 9, "I")
+            reasons = ballot.get("reasons", {})
+            for c in CRITERIA:
+                key, mx = c["key"], c["max"]
+                pdf.body(
+                    f"{c['label']} (max {mx}):  PRO {ballot['scores']['pro'][key]}"
+                    f"  ·  CON {ballot['scores']['con'][key]}", 10, "B")
+                for side in ("pro", "con"):
+                    why = reasons.get(side, {}).get(key)
+                    if why:
+                        pdf.body(f"  {side.upper()}: {why}", 9, "I")
+                pdf.ln(1)
+            pdf.body(f"TOTAL:  PRO {ballot['totals']['pro']}/100"
+                     f"  ·  CON {ballot['totals']['con']}/100", 10, "B")
+            if ballot.get("summary"):
+                pdf.body("The judge's summary:", 10, "B")
+                pdf.body(ballot["summary"], 9.5)
             pdf.ln(2)
 
     verdict = state.get("verdict")
