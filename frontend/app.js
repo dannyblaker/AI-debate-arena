@@ -72,6 +72,9 @@ async function refreshMaterials() {
     li.append(name, del);
     ul.appendChild(li);
   }
+  // Materials-only with zero materials would leave the debaters with no
+  // research at all — untick it when the last document is removed.
+  if (res.materials.length === 0) $("materials-only").checked = false;
 }
 
 $("material-add").addEventListener("click", () => $("material-file").click());
@@ -128,17 +131,22 @@ $("material-file").addEventListener("change", async () => {
   const err = $("material-error");
   err.hidden = true;
   const failures = [];
+  let added = 0;
   $("material-add").disabled = true;
   for (const file of $("material-file").files) {
     const item = pendingMaterialItem(file.name);
     try {
       await uploadMaterial(file, item.progress);
+      added++;
     } catch (e) {
       failures.push(e.message);
     }
     item.li.remove();
     await refreshMaterials(); // each finished file appears right away
   }
+  // Uploading your own sources usually means you want the debate grounded
+  // in them; switch to materials-only (the user can still untick it).
+  if (added) $("materials-only").checked = true;
   $("material-add").disabled = false;
   $("material-file").value = "";
   if (failures.length) {
@@ -211,8 +219,20 @@ function handleEvent(ev) {
     case "token": appendToken(ev); break;
     case "turn_start": renderTranscript(); break;
     case "turn_end": renderTranscript(); break;
-    case "phase": renderChrome(); break;
+    case "turn_prep": renderTranscript(); break;
+    case "phase":
+      renderChrome();
+      renderPrep();
+      break;
     case "status": renderChrome(); break;
+    case "prep_positions":
+    case "prep_start":
+    case "prep_sort_start":
+    case "prep_brief":
+    case "prep_done": renderPrep(); break;
+    case "prep_window": prepWindow(); break;
+    case "prep_quote": prepQuote(); break;
+    case "prep_sort": prepSort(ev); break;
     case "download_progress": renderDownload(); break;
     case "research_source": renderResearch(); break;
     case "research_done": renderResearch(); break;
@@ -236,9 +256,42 @@ function applyEvent(ev) {
       s.num_chunks = ev.num_chunks;
       s.semantic = ev.semantic || false;
       break;
+    case "prep_positions":
+      s.prep = { positions: { pro: ev.pro, con: ev.con }, stage: "positions",
+                 window: 0, total_windows: 0, source: "", quotes: [],
+                 sort_done: 0, briefs: { pro: null, con: null } };
+      break;
+    case "prep_start":
+      if (s.prep) { s.prep.stage = "mining"; s.prep.total_windows = ev.total; }
+      break;
+    case "prep_window":
+      if (s.prep) { s.prep.window = ev.index; s.prep.source = ev.source; }
+      break;
+    case "prep_quote":
+      if (s.prep) s.prep.quotes.push({ quote: ev.quote, source: ev.source, side: null });
+      break;
+    case "prep_sort_start":
+      if (s.prep) s.prep.stage = "sorting";
+      break;
+    case "prep_sort":
+      if (s.prep && s.prep.quotes[ev.index]) {
+        s.prep.quotes[ev.index].side = ev.side;
+        s.prep.sort_done++;
+      }
+      break;
+    case "prep_brief":
+      if (s.prep) s.prep.briefs[ev.side] = ev.quotes;
+      break;
+    case "prep_done":
+      if (s.prep) s.prep.stage = "done";
+      break;
+    case "turn_prep":
+      s.current_prep = { speaker: ev.speaker, label: ev.label, queries: ev.queries };
+      break;
     case "turn_start":
       s.current = { speaker: ev.speaker, phase: ev.phase, round: ev.round,
                     label: ev.label, text: "" };
+      s.current_prep = null;
       break;
     case "token": if (s.current) s.current.text += ev.text; break;
     case "turn_end":
@@ -266,7 +319,7 @@ function applyEvent(ev) {
 
 /* ---------------- Rendering ---------------- */
 
-const STEP_ORDER = ["model", "research", "debate", "judging", "done"];
+const STEP_ORDER = ["model", "research", "prep", "debate", "judging", "done"];
 
 function renderAll() {
   const active = state.phase !== "idle";
@@ -277,6 +330,7 @@ function renderAll() {
   renderChrome();
   renderDownload();
   renderResearch();
+  renderPrep();
   renderTranscript();
   renderJudges();
   renderVerdict();
@@ -344,6 +398,150 @@ function renderResearch() {
   }
 }
 
+/* ---------------- Case prep panel ---------------- */
+
+function quoteCard(q, idx) {
+  const d = document.createElement("div");
+  d.className = "quote-card";
+  d.dataset.idx = idx;
+  d.title = `${q.quote} — ${q.source}`;
+  d.textContent = `“${q.quote.length > 90 ? q.quote.slice(0, 90) + "…" : q.quote}”`;
+  return d;
+}
+
+function updatePrepHint() {
+  const p = state.prep;
+  let hint = "";
+  if (!p) hint = "clarifying the clash…";
+  else if (p.stage === "positions") hint = "positions set";
+  else if (p.stage === "mining") hint = `mining evidence — ${p.quotes.length} quotes so far`;
+  else if (p.stage === "sorting") hint = `sorting evidence ${p.sort_done}/${p.quotes.length}`;
+  else if (p.stage === "done") {
+    const n = (side) => (p.briefs[side] || []).length;
+    hint = `complete — PRO briefs ${n("pro")} quotes · CON briefs ${n("con")}`;
+  }
+  $("prep-hint").textContent = hint;
+}
+
+function updateMiningChrome() {
+  const p = state.prep;
+  $("prep-mining-label").textContent = p.window
+    ? `Scanning passage ${p.window} of ${p.total_windows} — ${p.source}`
+    : "Preparing to scan the source material…";
+  $("prep-bar").style.width =
+    p.total_windows ? `${(100 * p.window) / p.total_windows}%` : "0%";
+  $("prep-quote-count").textContent =
+    `${p.quotes.length} verbatim quote${p.quotes.length === 1 ? "" : "s"} verified against the source`;
+  updatePrepHint();
+}
+
+function updateSortChrome() {
+  const p = state.prep;
+  $("prep-sort-label").textContent =
+    `Each quote is weighed — reasoning first — and dealt to the side it truly supports (${p.sort_done}/${p.quotes.length})`;
+  let pro = 0, con = 0, waiting = 0;
+  for (const q of p.quotes) {
+    if (q.side === "pro") pro++;
+    else if (q.side === "con") con++;
+    else if (q.side === null) waiting++;
+  }
+  $("sort-count-pro").textContent = pro || "";
+  $("sort-count-con").textContent = con || "";
+  $("sort-count-neutral").textContent = waiting ? `${waiting} waiting` : "";
+  updatePrepHint();
+}
+
+function renderPrep() {
+  const p = state.prep;
+  const show = p || state.phase === "prep";
+  $("prep-panel").hidden = !show;
+  if (!show) return;
+  $("prep-clarifying").hidden = !!p;
+  $("prep-positions").hidden = !p;
+  updatePrepHint();
+  if (!p) {
+    for (const id of ["prep-mining", "prep-sorting", "prep-briefs"]) $(id).hidden = true;
+    return;
+  }
+  $("prep-pos-pro").textContent = p.positions.pro;
+  $("prep-pos-con").textContent = p.positions.con;
+
+  $("prep-mining").hidden = p.stage !== "mining";
+  if (p.stage === "mining") {
+    const feed = $("prep-quote-feed");
+    feed.innerHTML = "";
+    p.quotes.forEach((q, i) => feed.appendChild(quoteCard(q, i)));
+    feed.scrollTop = feed.scrollHeight;
+    updateMiningChrome();
+  }
+
+  $("prep-sorting").hidden = p.stage !== "sorting";
+  if (p.stage === "sorting") {
+    for (const col of ["pro", "neutral", "con"]) $(`sort-${col}`).innerHTML = "";
+    p.quotes.forEach((q, i) => {
+      const card = quoteCard(q, i);
+      if (q.side === null) card.classList.add("unsorted");
+      if (q.side === "neutral") card.classList.add("neutral-sorted");
+      const col = q.side === "pro" ? "sort-pro"
+        : q.side === "con" ? "sort-con" : "sort-neutral";
+      $(col).appendChild(card);
+    });
+    updateSortChrome();
+  }
+
+  $("prep-briefs").hidden = p.stage !== "done";
+  if (p.stage === "done") {
+    for (const side of ["pro", "con"]) {
+      const ol = $(`brief-${side}`);
+      ol.innerHTML = "";
+      for (const q of p.briefs[side] || []) {
+        const li = document.createElement("li");
+        li.textContent = `“${q.quote}”`;
+        li.title = q.source;
+        ol.appendChild(li);
+      }
+    }
+  }
+}
+
+/* Targeted updates so each event animates instead of re-rendering. */
+
+function prepWindow() {
+  if (!state.prep || $("prep-mining").hidden) { renderPrep(); return; }
+  updateMiningChrome();
+}
+
+function prepQuote() {
+  const p = state.prep;
+  if (!p || $("prep-mining").hidden) { renderPrep(); return; }
+  const i = p.quotes.length - 1;
+  const card = quoteCard(p.quotes[i], i);
+  card.classList.add("pop");
+  const feed = $("prep-quote-feed");
+  feed.appendChild(card);
+  feed.scrollTop = feed.scrollHeight;
+  updateMiningChrome();
+}
+
+function prepSort(ev) {
+  const p = state.prep;
+  if (!p || $("prep-sorting").hidden) { renderPrep(); return; }
+  const old = document.querySelector(`#sort-neutral .quote-card[data-idx="${ev.index}"]`);
+  if (old) old.remove();
+  const card = quoteCard(p.quotes[ev.index], ev.index);
+  if (ev.side === "pro") {
+    card.classList.add("fly-left");
+    $("sort-pro").prepend(card);
+  } else if (ev.side === "con") {
+    card.classList.add("fly-right");
+    $("sort-con").prepend(card);
+  } else {
+    card.classList.add("neutral-sorted", "pop");
+    $("sort-neutral").prepend(card);
+  }
+  updateSortChrome();
+}
+
 function turnDiv(turn, speaking) {
   const div = document.createElement("div");
   div.className = `turn ${turn.speaker}${speaking ? " speaking" : ""}`;
@@ -357,8 +555,38 @@ function turnDiv(turn, speaking) {
   return div;
 }
 
+/* Placeholder bubble shown while a debater is researching/planning the
+   speech it has not started delivering yet. */
+function prepTurnDiv(p) {
+  const div = document.createElement("div");
+  div.className = `turn ${p.speaker} preparing`;
+  const label = document.createElement("div");
+  label.className = "turn-label";
+  label.textContent = p.label;
+  const body = document.createElement("div");
+  const msg = document.createElement("span");
+  msg.className = "prep-msg";
+  msg.innerHTML = p.queries.length
+    ? '🔍 searching the research library<span class="dots"></span>'
+    : '💭 planning this speech<span class="dots"></span>';
+  body.appendChild(msg);
+  if (p.queries.length) {
+    const chips = document.createElement("div");
+    chips.className = "query-chips";
+    for (const q of p.queries) {
+      const chip = document.createElement("span");
+      chip.className = "query-chip";
+      chip.textContent = q;
+      chips.appendChild(chip);
+    }
+    body.appendChild(chips);
+  }
+  div.append(label, body);
+  return div;
+}
+
 function renderTranscript() {
-  const show = state.transcript.length > 0 || state.current;
+  const show = state.transcript.length > 0 || state.current || state.current_prep;
   $("debate-panel").hidden = !show;
   if (!show) return;
   const box = $("transcript");
@@ -368,6 +596,8 @@ function renderTranscript() {
     const div = turnDiv(state.current, true);
     div.id = "current-turn";
     box.appendChild(div);
+  } else if (state.current_prep) {
+    box.appendChild(prepTurnDiv(state.current_prep));
   }
   updateJumpBtn();
 }

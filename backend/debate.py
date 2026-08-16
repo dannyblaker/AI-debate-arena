@@ -10,8 +10,8 @@ import re
 import threading
 from dataclasses import dataclass, field
 
-from . import embeddings, judging, research
-from .config import FAKE_LLM, RAG_QUERIES, USE_EMBEDDINGS
+from . import embeddings, judging, prep, research
+from .config import CASE_PREP, FAKE_LLM, RAG_QUERIES, USE_EMBEDDINGS
 from .llm import load_llm
 from .models_registry import StopRequested, ensure_model_file, get_model
 from .rag import ResearchIndex
@@ -22,18 +22,22 @@ PHASE_TASKS = {
     "opening": (
         "Deliver your OPENING STATEMENT: begin with one unambiguous sentence "
         "stating your position on the motion, then frame the motion on your "
-        "terms and present your two or three strongest arguments. Under 280 "
-        "words."
+        "terms and present your two or three strongest arguments, each "
+        "anchored in a specific piece of evidence — quote your best material. "
+        "Under 280 words."
     ),
     "rebuttal": (
-        "Deliver your REBUTTAL: directly attack your opponent's most recent "
-        "points, defend your own case against their attacks, and extend your "
-        "strongest argument. Engage with what was actually said. Under 240 words."
+        "Deliver your REBUTTAL: single out your opponent's strongest point "
+        "and dismantle it with specific evidence, defend your own case "
+        "against their attacks, and advance your case with fresh evidence "
+        "you have not yet used — do not restate your opening. Engage with "
+        "what was actually said. Under 240 words."
     ),
     "closing": (
         "Deliver your CLOSING STATEMENT: crystallize the key clashes of the "
-        "debate, explain why your side has won them, and end memorably. No new "
-        "arguments. Under 220 words."
+        "debate, explain why your side has won them — pointing to the "
+        "decisive evidence — and end memorably. No new arguments. Under 220 "
+        "words."
     ),
 }
 
@@ -70,22 +74,29 @@ def build_schedule(rounds: int) -> list[dict]:
     return schedule
 
 
-def _stance(side: str) -> str:
+def _stance(side: str, position: str = "") -> str:
     """Unambiguous statement of what this side must argue. Spelled out for
     both statement- and question-phrased motions, because a bare 'argue FOR
     the motion' is easily misread (especially by small models) as 'argue for
-    the thing the motion is about'."""
+    the thing the motion is about'. `position` is the side's burden restated
+    as a plain sentence (prep.derive_positions) — repeating it here saves
+    the model from re-deriving double negations, which flips sides."""
     if side == "pro":
-        return (
+        text = (
             "You are the PROPOSITION (PRO). You AGREE with the motion and "
             "argue that it is TRUE. If the motion is phrased as a question, "
             "your answer is emphatically YES."
         )
-    return (
-        "You are the OPPOSITION (CON). You DISAGREE with the motion and "
-        "argue that it is FALSE. If the motion is phrased as a question, "
-        "your answer is emphatically NO."
-    )
+    else:
+        text = (
+            "You are the OPPOSITION (CON). You DISAGREE with the motion and "
+            "argue that it is FALSE. If the motion is phrased as a question, "
+            "your answer is emphatically NO."
+        )
+    if position:
+        text += (" In plain terms, every argument you make must convince "
+                 f"the judge that: {position}")
+    return text
 
 
 def _opponent_last(transcript: list[dict], side: str) -> str:
@@ -94,7 +105,7 @@ def _opponent_last(transcript: list[dict], side: str) -> str:
 
 
 def _research_queries(llm, cfg: DebateConfig, turn: dict,
-                      transcript: list[dict]) -> list[str]:
+                      transcript: list[dict], position: str) -> list[str]:
     """Let the debater write its own search queries for this turn — far
     better recall over a large library than one fixed topic query."""
     side = turn["speaker"]
@@ -104,7 +115,8 @@ def _research_queries(llm, cfg: DebateConfig, turn: dict,
         return fallback
     prompt = (
         f'Motion under debate: "{cfg.topic}"\n'
-        f"You argue {'FOR' if side == 'pro' else 'AGAINST'} the motion. "
+        f"You argue {'FOR' if side == 'pro' else 'AGAINST'} the motion — "
+        f"you must prove that: {position}\n"
         f"You are preparing your {turn['phase']}.\n"
     )
     if opponent:
@@ -135,7 +147,8 @@ def _research_queries(llm, cfg: DebateConfig, turn: dict,
 
 
 def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
-                      excerpts: str) -> list[dict]:
+                      excerpts: str, brief: str = "",
+                      position: str = "") -> list[dict]:
     side = turn["speaker"]
     personality = (cfg.pro_personality if side == "pro" else cfg.con_personality) \
         .strip() or DEFAULT_PERSONALITY
@@ -144,14 +157,17 @@ def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
         "You are a world-class competitive debater and subject-matter expert "
         "taking part in a formal debate.\n"
         f'The motion under debate: "{cfg.topic}"\n'
-        f"{_stance(side)}\n"
+        f"{_stance(side, position)}\n"
         "Your opponent argues the exact opposite. Attack their arguments "
         "directly; never agree with their side, never switch sides, never "
         "concede the debate.\n"
         f"Your personality and speaking style: {personality}\n"
-        "Ground your claims in the research excerpts you are given, citing a "
-        "source inline by the actual title shown in brackets above its "
-        "excerpt. Where research is thin, draw on your own expertise.\n"
+        "Argue from concrete evidence, never generalities: anchor every "
+        "major argument in a specific fact, moment or short verbatim "
+        "quotation from your evidence brief or the research excerpts, citing "
+        "the source inline by the actual title shown in brackets. One exact "
+        "quotation deployed at the right moment beats a paragraph of "
+        "abstraction. Where research is thin, draw on your own expertise.\n"
         "The research may lean toward one side. If it favours your opponent, "
         "do not adopt its conclusions — use it to anticipate and rebut their "
         "case, and reframe its facts to serve your side.\n"
@@ -182,10 +198,19 @@ def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
         else:
             add("user", f"Your opponent delivered their {t['label']}:\n\n{t['text']}")
 
-    task = (
+    task = ""
+    if brief:
+        task += (
+            "YOUR EVIDENCE BRIEF — verbatim quotations you gathered from "
+            "the source material while preparing your case. Deploy the "
+            "items that genuinely support YOUR claim, quoting them exactly. "
+            "If an item actually favours your opponent's claim, do not "
+            "build on it — rebut it or reframe it.\n\n" + brief + "\n\n"
+        )
+    task += (
         f"RESEARCH EXCERPTS you may cite:\n\n{excerpts}\n\n"
         f"It is now your turn ({turn['label']}). {PHASE_TASKS[turn['phase']]}\n"
-        f"Remember your side: {_stance(side)}"
+        f"Remember your side: {_stance(side, position)}"
     )
     add("user", task)
 
@@ -218,22 +243,29 @@ def _too_similar(text: str, transcript: list[dict], threshold: float = 0.6) -> b
     )
 
 
-def _argued_wrong_side(llm, topic: str, side: str, text: str) -> bool:
-    """Ask the model to classify which side a speech actually argued.
-    Small models sometimes drift onto the opponent's side mid-debate,
-    especially when the research material is one-sided; this catches it."""
+def _argued_wrong_side(llm, topic: str, side: str, text: str,
+                       positions: dict[str, str]) -> bool:
+    """Classify which side's claim a speech actually SUPPORTS. Small models
+    drift onto the opponent's side mid-debate — and under a negated motion
+    a confused speech can assert 'the motion is true' while its substance
+    proves the opposite. Judging against the plain-language claims (not the
+    speech's own TRUE/FALSE labels) catches both."""
     answer = llm.chat(
         [{"role": "system", "content":
-          "You classify debate speeches. Reply with a single word: TRUE if "
-          "the speech argues the motion is true (answer yes), or FALSE if it "
-          "argues the motion is false (answer no)."},
+          "You classify debate speeches by the substance of their "
+          "arguments, ignoring what the speech asserts about which side it "
+          "is on. Reply with a single letter: A or B."},
          {"role": "user", "content":
-          f'Motion: "{topic}"\n\nSpeech:\n{text[:2500]}\n\n'
-          "Which side does this speech argue? Reply with one word, TRUE or "
-          "FALSE."}],
+          f'Motion: "{topic}"\n\n'
+          f"Claim A: {positions['pro']}\n"
+          f"Claim B: {positions['con']}\n\n"
+          f"Speech:\n{text[:2500]}\n\n"
+          "Taken as a whole, which claim does the substance of this "
+          "speech's evidence and reasoning actually support? Reply with "
+          "one letter, A or B."}],
         max_tokens=4, temperature=0.0).strip().upper()
-    wrong = "FALSE" if side == "pro" else "TRUE"
-    right = "TRUE" if side == "pro" else "FALSE"
+    wrong = "B" if side == "pro" else "A"
+    right = "A" if side == "pro" else "B"
     # Only regenerate on an unambiguous wrong-side verdict.
     return wrong in answer and right not in answer
 
@@ -279,20 +311,44 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
         emit("research_done", num_sources=len(docs),
              num_chunks=len(index.chunks), semantic=index.semantic)
 
+        positions = {"pro": "", "con": ""}
+        briefs = {"pro": "", "con": ""}
+        if not FAKE_LLM:
+            emit("phase", phase="prep",
+                 message="The debaters prepare their cases…")
+            emit("status", message="Clarifying what each side must prove…")
+            positions = prep.derive_positions(llm, cfg.topic)
+            emit("prep_positions", pro=positions["pro"], con=positions["con"])
+            emit("status", message=f"PRO must prove: {positions['pro']}")
+            emit("status", message=f"CON must prove: {positions['con']}")
+            if index.chunks and CASE_PREP:
+                briefs = prep.build_briefs(llm, cfg.topic, positions, index,
+                                           emit, stop)
+
         emit("phase", phase="debate", message="The debate begins.")
         transcript: list[dict] = []
         for turn in build_schedule(cfg.rounds):
             if stop.is_set():
                 raise StopRequested()
+            # Announce the turn before the (slow) research step so the UI
+            # can show who is preparing and, once known, their queries.
+            emit("turn_prep", speaker=turn["speaker"], label=turn["label"],
+                 queries=[])
             if index.chunks:
-                queries = _research_queries(llm, cfg, turn, transcript)
+                queries = _research_queries(llm, cfg, turn, transcript,
+                                            positions[turn["speaker"]])
                 if len(queries) > 1:
+                    emit("turn_prep", speaker=turn["speaker"],
+                         label=turn["label"],
+                         queries=[q[:80] for q in queries[:-1]])
                     emit("status", message=f"{turn['label']} — researching: "
                          + " · ".join(f"“{q[:60]}”" for q in queries[:-1]))
                 excerpts = index.gather_research(queries)
             else:
                 excerpts = index.gather_research([cfg.topic])
-            messages = _debater_messages(cfg, turn, transcript, excerpts)
+            messages = _debater_messages(cfg, turn, transcript, excerpts,
+                                         briefs[turn["speaker"]],
+                                         positions[turn["speaker"]])
             text = ""
             for attempt in range(2):
                 emit("turn_start", **turn)
@@ -316,11 +372,14 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
                                "points.")
                     emit("status", message=f"{turn['label']} repeated earlier "
                          "material — regenerating.")
-                elif _argued_wrong_side(llm, cfg.topic, turn["speaker"], text):
+                elif _argued_wrong_side(llm, cfg.topic, turn["speaker"], text,
+                                        positions):
                     problem = ("That speech argued the WRONG SIDE of the "
-                               f"motion. {_stance(turn['speaker'])} Rewrite "
-                               "your speech so every argument supports YOUR "
-                               "side and attacks your opponent's.")
+                               f"motion. "
+                               f"{_stance(turn['speaker'], positions[turn['speaker']])} "
+                               "Rewrite your speech so every argument "
+                               "supports YOUR side and attacks your "
+                               "opponent's.")
                     emit("status", message=f"{turn['label']} argued the wrong "
                          "side — regenerating.")
                 else:
@@ -355,7 +414,8 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
 
             try:
                 ballot = judging.judge_debate(llm, judge, cfg.topic,
-                                              transcript, on_criterion)
+                                              transcript, on_criterion,
+                                              positions)
             except StopRequested:
                 raise
             except RuntimeError as e:

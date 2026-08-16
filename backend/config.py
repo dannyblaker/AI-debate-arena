@@ -32,6 +32,17 @@ RAG_MAX_CHARS = int(os.environ.get("RAG_MAX_CHARS", "10000"))
 RAG_NEIGHBORS = int(os.environ.get("RAG_NEIGHBORS", "1"))
 RAG_QUERIES = int(os.environ.get("RAG_QUERIES", "3"))
 
+# Case preparation: before the debate, each side sweeps the research
+# library window-by-window, extracts verbatim quotations and receives a
+# brief of its PREP_QUOTES_PER_SIDE strongest items. Libraries larger than
+# PREP_MAX_WINDOWS windows are pruned to the most motion-relevant windows
+# (plus each document's ending). Set CASE_PREP=0 to skip the stage.
+CASE_PREP = os.environ.get("CASE_PREP", "1").lower() not in ("0", "false", "no")
+PREP_WINDOW_CHARS = int(os.environ.get("PREP_WINDOW_CHARS", "6000"))
+PREP_WINDOW_OVERLAP = int(os.environ.get("PREP_WINDOW_OVERLAP", "400"))
+PREP_MAX_WINDOWS = int(os.environ.get("PREP_MAX_WINDOWS", "24"))
+PREP_QUOTES_PER_SIDE = int(os.environ.get("PREP_QUOTES_PER_SIDE", "8"))
+
 # Hybrid retrieval: a small GGUF embedding model (llama.cpp) adds semantic
 # search on top of BM25 keyword search. Set EMBEDDINGS=0 for keyword-only.
 USE_EMBEDDINGS = os.environ.get("EMBEDDINGS", "1").lower() not in ("0", "false", "no")

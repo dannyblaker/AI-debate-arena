@@ -167,18 +167,27 @@ def _write_summary(llm, system: str, transcript_text: str, reasons: dict,
 
 
 def judge_debate(llm, judge: dict, topic: str, transcript: list[dict],
-                 on_criterion=None) -> dict:
+                 on_criterion=None, positions: dict | None = None) -> dict:
     """Return a ballot: per-criterion scores and written reasoning for each
     speaker, totals, winner, and a closing summary statement.
 
     `on_criterion(crit, result)` is called after each criterion is scored,
-    so callers can stream partial ballots to the UI."""
+    so callers can stream partial ballots to the UI. `positions` optionally
+    holds each side's burden restated in plain words (prep.derive_positions),
+    which keeps the judge oriented under negated motions."""
+    sides = ("Speaker PRO argued that the motion is true, speaker CON "
+             "argued that it is false.")
+    if positions and positions.get("pro") and positions.get("con"):
+        sides = (
+            "Speaker PRO argued that the motion is true — their claim: "
+            f"{positions['pro']} Speaker CON argued that the motion is "
+            f"false — their claim: {positions['con']}"
+        )
     system = (
         f"You are {judge['name']}, {judge['persona']}. You are a strictly "
         "neutral judge of a formal debate. You have no personal opinion on "
-        "the motion; you score only what was said in the transcript. Speaker "
-        "PRO argued that the motion is true, speaker CON argued that it is "
-        "false. Repetition of earlier speeches, failure to engage with the "
+        f"the motion; you score only what was said in the transcript. {sides} "
+        "Repetition of earlier speeches, failure to engage with the "
         "opponent's actual points, and arguing the wrong side must all be "
         "punished heavily."
     )

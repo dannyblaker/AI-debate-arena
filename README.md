@@ -26,6 +26,9 @@ flowchart TD
     topic["Motion"] --> research["Web research<br/>DuckDuckGo + Wikipedia, trafilatura extraction"]
     docs["Your documents — optional<br/>PDF · Word · text · Markdown · HTML"] --> index
     research --> index["Hybrid chunk index<br/>BM25 keywords + GGUF embeddings,<br/>reciprocal rank fusion"]
+    index --> briefs["Case prep<br/>verbatim evidence briefs,<br/>quotes verified against sources"]
+    briefs --> pro
+    briefs --> con
     index --> pro
     index --> con
     subgraph llm["Shared local LLM — llama.cpp, one GGUF"]
@@ -63,14 +66,27 @@ flowchart TD
    text/Markdown or HTML) in the setup screen — they are indexed alongside
    the web research and cited by filename, or used exclusively if you tick
    *Use only my materials*.
-4. **Debate** — classic format, streamed live to the browser token by token:
+4. **Case prep** — first, each side's burden of proof is restated once as
+   a plain positive sentence (this keeps small models from flipping sides
+   on negated motions like "X never understood Y") and used consistently
+   by every later step: prompting, retrieval, side-checking and judging.
+   Then each side receives an evidence brief: the source material is swept
+   passage by passage, the model copies out quotations that could help
+   either side, every quote is verified verbatim against the source
+   (hallucinated quotes are dropped), each quote is classified —
+   reasoning first — by which side's claim it actually supports, and each
+   debater selects its strongest items. This catches decisive material — a
+   document's conclusion, a scene at the end of a script — that per-turn
+   retrieval can miss. Skippable with `CASE_PREP=0`.
+5. **Debate** — classic format, streamed live to the browser token by token:
    openings (PRO, CON) → alternating rebuttal rounds → closings (CON, then PRO
-   gets the final word). The debaters are instructed to cite sources inline.
-5. **Judging** — a neutral judge scores each of 8 fine-grained criteria in
+   gets the final word). The debaters must anchor every argument in specific
+   evidence, quoting their brief and the per-turn research excerpts.
+6. **Judging** — a neutral judge scores each of 8 fine-grained criteria in
    its own focused pass, writing separate reasoning for each side before
    committing to a score (JSON output is grammar-constrained by llama.cpp),
    then writes a closing summary of what each side did well and less well.
-6. **Verdict** — winner by total points on the judge's ballot.
+7. **Verdict** — winner by total points on the judge's ballot.
    Export the full transcript, ballots and verdict as a PDF.
 
 ## Models
@@ -146,6 +162,10 @@ uvicorn backend.main:app --reload
 | `RAG_QUERIES` | `3` | Search queries the debater writes for itself per turn |
 | `RAG_NEIGHBORS` | `1` | Adjacent chunks stitched around each retrieved passage |
 | `MAX_MATERIAL_CHARS` | `600000` | Max characters kept per uploaded document |
+| `CASE_PREP` | on | `0` = skip pre-debate evidence mining (faster, weaker arguments) |
+| `PREP_WINDOW_CHARS` | `6000` | Size of each source passage scanned during case prep |
+| `PREP_MAX_WINDOWS` | `24` | Max passages scanned (larger libraries are pruned to the most motion-relevant passages, plus each document's ending) |
+| `PREP_QUOTES_PER_SIDE` | `8` | Verbatim quotes in each side's evidence brief |
 | `EMBEDDINGS` | on | `0` = disable semantic search (keyword-only BM25 retrieval) |
 | `EMBED_MODEL_REPO` | `CompendiumLabs/bge-small-en-v1.5-gguf` | HF repo of the GGUF embedding model |
 | `EMBED_MODEL_FILE` | `bge-small-en-v1.5-q8_0.gguf` | Embedding model file within the repo |
@@ -160,6 +180,7 @@ backend/
   research.py        DuckDuckGo/Wikipedia scraping
   materials.py       user-uploaded research documents (PDF/DOCX/text/HTML)
   rag.py             chunking + hybrid BM25/semantic retrieval (RRF)
+  prep.py            pre-debate case prep: verbatim evidence briefs per side
   embeddings.py      GGUF embedding model wrapper (llama.cpp)
   models_registry.py model catalog, RAM-aware quant selection, downloads
   llm.py             llama.cpp wrapper (+ fake mode)

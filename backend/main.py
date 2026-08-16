@@ -30,8 +30,10 @@ def _initial_state() -> dict:
         "sources": [],
         "num_chunks": 0,
         "semantic": False,
+        "prep": None,
         "transcript": [],
         "current": None,
+        "current_prep": None,
         "judges": [{"id": j["id"], "name": j["name"], "status": "waiting",
                     "partial": {}, "ballot": None} for j in JUDGES],
         "verdict": None,
@@ -78,9 +80,45 @@ class DebateManager:
         elif t == "research_done":
             s["num_chunks"] = ev["num_chunks"]
             s["semantic"] = ev.get("semantic", False)
+        elif t == "prep_positions":
+            s["prep"] = {"positions": {"pro": ev["pro"], "con": ev["con"]},
+                         "stage": "positions", "window": 0,
+                         "total_windows": 0, "source": "", "quotes": [],
+                         "sort_done": 0, "briefs": {"pro": None, "con": None}}
+        elif t == "prep_start":
+            if s["prep"]:
+                s["prep"]["stage"] = "mining"
+                s["prep"]["total_windows"] = ev["total"]
+        elif t == "prep_window":
+            if s["prep"]:
+                s["prep"]["window"] = ev["index"]
+                s["prep"]["source"] = ev["source"]
+        elif t == "prep_quote":
+            if s["prep"]:
+                s["prep"]["quotes"].append({"quote": ev["quote"],
+                                            "source": ev["source"],
+                                            "side": None})
+        elif t == "prep_sort_start":
+            if s["prep"]:
+                s["prep"]["stage"] = "sorting"
+        elif t == "prep_sort":
+            p = s["prep"]
+            if p and 0 <= ev["index"] < len(p["quotes"]):
+                p["quotes"][ev["index"]]["side"] = ev["side"]
+                p["sort_done"] += 1
+        elif t == "prep_brief":
+            if s["prep"]:
+                s["prep"]["briefs"][ev["side"]] = ev["quotes"]
+        elif t == "prep_done":
+            if s["prep"]:
+                s["prep"]["stage"] = "done"
+        elif t == "turn_prep":
+            s["current_prep"] = {k: ev[k] for k in
+                                 ("speaker", "label", "queries")}
         elif t == "turn_start":
             s["current"] = {k: ev[k] for k in ("speaker", "phase", "round", "label")}
             s["current"]["text"] = ""
+            s["current_prep"] = None
         elif t == "token":
             if s["current"]:
                 s["current"]["text"] += ev["text"]

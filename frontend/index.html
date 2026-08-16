@@ -90,6 +90,7 @@
     <ol id="stepper">
       <li data-step="model">Model</li>
       <li data-step="research">Research</li>
+      <li data-step="prep">Prep</li>
       <li data-step="debate">Debate</li>
       <li data-step="judging">Judging</li>
       <li data-step="done">Verdict</li>
@@ -105,6 +106,57 @@
       <h2>📚 Research</h2>
       <p id="research-summary" class="hint">Collecting articles and encyclopedia entries…</p>
       <ul id="sources"></ul>
+    </section>
+
+    <section id="prep-panel" class="card" hidden>
+      <details id="prep-details" open>
+        <summary>
+          <span class="prep-title">🗂 Case Preparation</span>
+          <span id="prep-hint" class="hint"></span>
+        </summary>
+        <div id="prep-clarifying" class="prep-clarifying" hidden>
+          <span class="scale-anim">⚖️</span> Clarifying what each side must prove<span class="dots"></span>
+        </div>
+        <div id="prep-positions" class="prep-positions" hidden>
+          <div class="position-card pro"><b>PRO must prove</b><span id="prep-pos-pro"></span></div>
+          <div class="position-card con"><b>CON must prove</b><span id="prep-pos-con"></span></div>
+        </div>
+        <div id="prep-mining" hidden>
+          <div class="prep-scan-row">
+            <div class="scan-doc"><div class="scan-line"></div></div>
+            <div class="prep-scan-info">
+              <p id="prep-mining-label" class="hint"></p>
+              <div class="progress-track"><div id="prep-bar" class="progress-fill"></div></div>
+              <p id="prep-quote-count" class="hint"></p>
+            </div>
+          </div>
+          <div id="prep-quote-feed" class="quote-feed"></div>
+        </div>
+        <div id="prep-sorting" hidden>
+          <p id="prep-sort-label" class="hint"></p>
+          <div class="sort-columns">
+            <div class="sort-col pro">
+              <h4>PRO's pile <span id="sort-count-pro" class="sort-count"></span></h4>
+              <div id="sort-pro" class="sort-cards"></div>
+            </div>
+            <div class="sort-col neutral">
+              <h4>In review <span id="sort-count-neutral" class="sort-count"></span></h4>
+              <div id="sort-neutral" class="sort-cards"></div>
+            </div>
+            <div class="sort-col con">
+              <h4>CON's pile <span id="sort-count-con" class="sort-count"></span></h4>
+              <div id="sort-con" class="sort-cards"></div>
+            </div>
+          </div>
+        </div>
+        <div id="prep-briefs" hidden>
+          <p class="hint">Each side's final evidence brief — their strongest verbatim quotes:</p>
+          <div class="brief-columns">
+            <div class="brief-col pro"><h4>PRO's brief</h4><ol id="brief-pro"></ol></div>
+            <div class="brief-col con"><h4>CON's brief</h4><ol id="brief-con"></ol></div>
+          </div>
+        </div>
+      </details>
     </section>
 
     <section id="debate-panel" hidden>
