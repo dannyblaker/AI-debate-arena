@@ -1,10 +1,11 @@
-# 🎙️ AI Debate Arena
+# AI Debate Arena
 
 Two AIs debate any topic you choose. A neutral AI judge scores the debate
 on a 100-point ballot and declares a winner. Everything — both debaters and
 the judge — runs on a **single local LLM** (a GGUF model from HuggingFace,
-via `llama.cpp`), with live web research feeding the debaters through a RAG
-pipeline. The whole thing runs with one command:
+via `llama.cpp`). The debaters are fed through a hybrid keyword + semantic
+RAG pipeline built from live web research and any documents you upload
+(PDF, Word, text, Markdown, HTML). The whole thing runs with one command:
 
 ```bash
 docker compose up
@@ -14,30 +15,32 @@ then open **http://localhost:8000**.
 
 ## How it works
 
-```
-topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
-              │
-              ▼
-        BM25 chunk index  ──────────────┐
-                                        ▼
-   PRO debater ◄── shared local LLM ──► CON debater
-        │      (llama.cpp, one GGUF)      │
-        └────────── transcript ───────────┘
-                        │
-                        ▼
-        1 AI judge (a neutral debate adjudicator)
-        100-point ballot, 8 criteria: evidence, logic, refutation,
-        defense, persuasion, rhetoric, structure, clarity
-                        │
-                        ▼
-              verdict + PDF export
+```mermaid
+flowchart TD
+    topic["Motion"] --> research["Web research<br/>DuckDuckGo + Wikipedia, trafilatura extraction"]
+    docs["Your documents — optional<br/>PDF · Word · text · Markdown · HTML"] --> index
+    research --> index["Hybrid chunk index<br/>BM25 keywords + GGUF embeddings,<br/>reciprocal rank fusion"]
+    index --> pro
+    index --> con
+    subgraph llm["Shared local LLM — llama.cpp, one GGUF"]
+        pro["PRO debater"]
+        con["CON debater"]
+        judge["Neutral AI judge"]
+    end
+    pro <-- "openings · rebuttals · closings" --> con
+    pro --> transcript["Transcript, streamed live"]
+    con --> transcript
+    transcript --> judge
+    judge --> verdict["100-point ballot — 8 criteria:<br/>evidence, logic, refutation, defense,<br/>persuasion, rhetoric, structure, clarity"]
+    verdict --> export["Verdict + PDF export"]
 ```
 
 1. **Setup** — enter a motion, pick a model, optionally give each debater a
-   personality ("proper and Oxford-like", "sassy and sarcastic", …) and choose
-   the number of rebuttal rounds. Motions work best phrased as claims
-   ("X is true"), the way real debate motions are; questions are also
-   handled (PRO argues yes, CON argues no).
+   personality ("proper and Oxford-like", "sassy and sarcastic", …), choose
+   the number of rebuttal rounds, and optionally upload your own research
+   documents. Motions work best phrased as claims ("X is true"), the way
+   real debate motions are; questions are also handled (PRO argues yes,
+   CON argues no).
 2. **Model** — on *Begin Debate* the app checks available RAM (respecting
    container memory limits) and downloads the highest-quality quantization of
    the chosen model that fits in memory. Already-downloaded models are flagged
