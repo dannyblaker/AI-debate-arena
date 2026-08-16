@@ -225,6 +225,17 @@ def api_stop():
     return {"ok": True}
 
 
+@app.post("/api/debate/reset")
+async def api_reset():
+    """Clear a finished (or failed) debate so the setup screen returns."""
+    if manager.running:
+        raise HTTPException(409, "A debate is still in progress.")
+    with manager.lock:
+        manager.state = _initial_state()
+    await manager._broadcast({"type": "snapshot", "state": manager.snapshot()})
+    return {"ok": True}
+
+
 @app.get("/api/export/pdf")
 def api_export_pdf():
     state = manager.snapshot()

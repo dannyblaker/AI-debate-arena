@@ -137,7 +137,11 @@ $("begin-btn").addEventListener("click", async () => {
   }
 });
 
-$("reset-btn").addEventListener("click", () => location.reload());
+$("reset-btn").addEventListener("click", async () => {
+  // Clear the finished debate server-side, or a reload just re-renders it.
+  try { await fetch("/api/debate/reset", { method: "POST" }); } catch {}
+  location.reload();
+});
 $("stop-btn").addEventListener("click", () => fetch("/api/debate/stop", { method: "POST" }));
 
 /* ---------------- WebSocket ---------------- */
