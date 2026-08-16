@@ -168,6 +168,13 @@ class DebateManager:
                 "pro_personality": cfg.pro_personality,
                 "con_personality": cfg.con_personality,
             }
+        # Clients mirror state from their connect-time snapshot; the fields
+        # seeded above (topic, model, config) never arrive as events, so
+        # push a fresh snapshot before the event stream begins.
+        if self.loop and not self.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast({"type": "snapshot", "state": self.snapshot()}),
+                self.loop)
         self.emit("status", message=f'New debate: "{cfg.topic}"')
         stop = self.stop_event
         self.thread = threading.Thread(
