@@ -30,7 +30,9 @@ header {
   text-align: center;
   padding: 2.2rem 1rem 0.5rem;
 }
+header .logo { width: 72px; height: 72px; margin-bottom: 0.4rem; }
 header h1 { margin: 0; font-size: 2rem; letter-spacing: 0.5px; }
+.brand-accent { color: #a98cff; }
 .tagline { color: var(--text-dim); margin: 0.4rem 0 0; }
 
 main {

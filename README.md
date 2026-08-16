@@ -1,4 +1,10 @@
-# AI Debate Arena
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/wordmark-dark.svg">
+    <img src="branding/wordmark-light.svg" width="440" alt="AI Debate Arena">
+  </picture>
+  <p><b>Two AIs debate. One AI judge decides the winner.</b></p>
+</div>
 
 Two AIs debate any topic you choose. A neutral AI judge scores the debate
 on a 100-point ballot and declares a winner. Everything — both debaters and
