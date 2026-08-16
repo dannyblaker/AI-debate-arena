@@ -127,6 +127,22 @@ textarea { resize: vertical; }
   font-size: 0.85rem;
   color: var(--text-dim);
 }
+.material-item.pending { border-style: dashed; }
+.material-status { white-space: nowrap; }
+.material-progress-track {
+  flex: 0 0 90px;
+  height: 6px;
+  background: var(--bg-card);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.material-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), #a98cff);
+  transition: width 0.2s;
+}
+.material-progress-fill.processing { animation: pulse 1.6s infinite; }
 .material-remove {
   padding: 0.05rem 0.5rem;
   font-size: 0.8rem;

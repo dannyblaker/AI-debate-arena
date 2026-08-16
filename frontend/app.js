@@ -76,23 +76,68 @@ async function refreshMaterials() {
 
 $("material-add").addEventListener("click", () => $("material-file").click());
 
+/* XHR instead of fetch: only XHR exposes upload byte progress. */
+function uploadMaterial(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/materials");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((100 * e.loaded) / e.total));
+    };
+    // All bytes sent — anything from here on is server-side parsing.
+    xhr.upload.onload = () => onProgress(100);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) return resolve();
+      let detail = xhr.statusText;
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch {}
+      reject(new Error(typeof detail === "string" ? detail : JSON.stringify(detail)));
+    };
+    xhr.onerror = () => reject(new Error(`${file.name}: upload failed`));
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
+}
+
+function pendingMaterialItem(filename) {
+  const li = document.createElement("li");
+  li.className = "material-item pending";
+  const name = document.createElement("span");
+  name.textContent = `📄 ${filename}`;
+  const status = document.createElement("span");
+  status.className = "material-status";
+  status.textContent = "uploading…";
+  const track = document.createElement("div");
+  track.className = "material-progress-track";
+  const fill = document.createElement("div");
+  fill.className = "material-progress-fill";
+  track.appendChild(fill);
+  li.append(name, status, track);
+  $("material-list").appendChild(li);
+  return {
+    li,
+    progress(pct) {
+      fill.style.width = `${pct}%`;
+      status.textContent = pct < 100 ? `uploading ${pct}%` : "processing…";
+      if (pct >= 100) fill.classList.add("processing");
+    },
+  };
+}
+
 $("material-file").addEventListener("change", async () => {
   const err = $("material-error");
   err.hidden = true;
   const failures = [];
   $("material-add").disabled = true;
   for (const file of $("material-file").files) {
-    const form = new FormData();
-    form.append("file", file);
+    const item = pendingMaterialItem(file.name);
     try {
-      const res = await fetch("/api/materials", { method: "POST", body: form });
-      if (!res.ok) {
-        const detail = (await res.json()).detail || res.statusText;
-        failures.push(typeof detail === "string" ? detail : JSON.stringify(detail));
-      }
+      await uploadMaterial(file, item.progress);
     } catch (e) {
-      failures.push(`${file.name}: ${e.message}`);
+      failures.push(e.message);
     }
+    item.li.remove();
+    await refreshMaterials(); // each finished file appears right away
   }
   $("material-add").disabled = false;
   $("material-file").value = "";
@@ -100,7 +145,6 @@ $("material-file").addEventListener("change", async () => {
     err.textContent = failures.join(" — ");
     err.hidden = false;
   }
-  refreshMaterials();
 });
 
 $("begin-btn").addEventListener("click", async () => {
