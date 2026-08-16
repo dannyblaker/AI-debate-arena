@@ -184,7 +184,10 @@ function applyEvent(ev) {
     case "status": s.log.push(ev.message); break;
     case "download_progress": s.download = ev; break;
     case "research_source": s.sources.push(ev); break;
-    case "research_done": s.num_chunks = ev.num_chunks; break;
+    case "research_done":
+      s.num_chunks = ev.num_chunks;
+      s.semantic = ev.semantic || false;
+      break;
     case "turn_start":
       s.current = { speaker: ev.speaker, phase: ev.phase, round: ev.round,
                     label: ev.label, text: "" };
@@ -267,7 +270,8 @@ function renderResearch() {
   $("research-panel").hidden = !show;
   if (!show) return;
   $("research-summary").textContent = state.num_chunks
-    ? `${state.sources.length} sources collected · ${state.num_chunks} passages indexed for the debaters.`
+    ? `${state.sources.length} sources collected · ${state.num_chunks} passages indexed` +
+      `${state.semantic ? " (hybrid keyword + semantic search)" : ""} for the debaters.`
     : state.phase === "research"
       ? "Collecting articles and encyclopedia entries…"
       : `${state.sources.length} sources collected.`;

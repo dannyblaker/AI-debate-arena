@@ -43,9 +43,12 @@ topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
    the chosen model that fits in memory. Already-downloaded models are flagged
    in the UI and reused.
 3. **Research** — the app searches the web and Wikipedia, extracts article
-   text, and indexes it into overlapping chunks with BM25. Each debater's turn
-   retrieves the passages most relevant to the motion and the opponent's last
-   speech. You can also upload your own research materials (PDF, Word,
+   text, and splits it into overlapping chunks indexed two ways: BM25
+   keywords and dense vectors from a tiny (~35 MB) GGUF embedding model
+   (BGE-small, also run by llama.cpp — auto-downloaded, gracefully skipped
+   offline). Each debater's turn retrieves the passages most relevant to the
+   motion and the opponent's last speech, fusing both rankings with
+   reciprocal rank fusion. You can also upload your own research materials (PDF, Word,
    text/Markdown or HTML) in the setup screen — they are indexed alongside
    the web research and cited by filename, or used exclusively if you tick
    *Use only my materials*.
@@ -122,11 +125,16 @@ uvicorn backend.main:app --reload
 |---|---|---|
 | `MODELS_DIR` | `./models` | Where GGUF weights are stored |
 | `FAKE_LLM` | off | `1` = canned responses, no model download — full-pipeline demo/dev mode |
-| `N_CTX` | `8192` | Context window |
+| `N_CTX` | `16384` | Context window — raise it if you have the memory (RAM/VRAM budgeting adapts automatically) |
 | `N_THREADS` | auto | CPU threads for inference |
 | `N_GPU_LAYERS` | `0` | Model layers offloaded to GPU (`-1` = all; needs the CUDA build, see `Dockerfile.gpu`) |
 | `MAX_WEB_SOURCES` | `8` | Web pages fetched during research |
 | `MAX_WIKI_SOURCES` | `2` | Wikipedia articles fetched |
+| `RAG_TOP_K` | `6` | Research excerpts given to each debater turn |
+| `RAG_EXCERPT_CHARS` | `0` | Characters per excerpt (`0` = the full chunk) |
+| `EMBEDDINGS` | on | `0` = disable semantic search (keyword-only BM25 retrieval) |
+| `EMBED_MODEL_REPO` | `CompendiumLabs/bge-small-en-v1.5-gguf` | HF repo of the GGUF embedding model |
+| `EMBED_MODEL_FILE` | `bge-small-en-v1.5-q8_0.gguf` | Embedding model file within the repo |
 
 ## Project layout
 
@@ -137,7 +145,8 @@ backend/
   judging.py         judge persona, 100-point ballot, tally
   research.py        DuckDuckGo/Wikipedia scraping
   materials.py       user-uploaded research documents (PDF/DOCX/text/HTML)
-  rag.py             chunking + BM25 retrieval
+  rag.py             chunking + hybrid BM25/semantic retrieval (RRF)
+  embeddings.py      GGUF embedding model wrapper (llama.cpp)
   models_registry.py model catalog, RAM-aware quant selection, downloads
   llm.py             llama.cpp wrapper (+ fake mode)
   pdf_export.py      PDF transcript

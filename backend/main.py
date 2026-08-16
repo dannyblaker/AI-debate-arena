@@ -29,6 +29,7 @@ def _initial_state() -> dict:
         "download": None,
         "sources": [],
         "num_chunks": 0,
+        "semantic": False,
         "transcript": [],
         "current": None,
         "judges": [{"id": j["id"], "name": j["name"], "status": "waiting",
@@ -76,6 +77,7 @@ class DebateManager:
                                  "kind": ev.get("kind", "web")})
         elif t == "research_done":
             s["num_chunks"] = ev["num_chunks"]
+            s["semantic"] = ev.get("semantic", False)
         elif t == "turn_start":
             s["current"] = {k: ev[k] for k in ("speaker", "phase", "round", "label")}
             s["current"]["text"] = ""

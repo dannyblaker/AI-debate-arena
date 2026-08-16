@@ -10,8 +10,8 @@ import re
 import threading
 from dataclasses import dataclass, field
 
-from . import judging, research
-from .config import FAKE_LLM
+from . import embeddings, judging, research
+from .config import FAKE_LLM, USE_EMBEDDINGS
 from .llm import load_llm
 from .models_registry import StopRequested, ensure_model_file, get_model
 from .rag import ResearchIndex
@@ -123,7 +123,7 @@ def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
         query = f"{cfg.topic} {opponent_last[:400]}"
     else:
         query = cfg.topic
-    excerpts = index.format_excerpts(query, k=5)
+    excerpts = index.format_excerpts(query)
 
     # Present the debate as a real conversation: the opponent's speeches are
     # incoming ("user") messages, this debater's own speeches are its own
@@ -228,8 +228,18 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
         else:
             emit("status", message="Web research skipped — using your "
                                    "materials only.")
-        index = ResearchIndex(docs)
-        emit("research_done", num_sources=len(docs), num_chunks=len(index.chunks))
+
+        embedder = None
+        if docs and not FAKE_LLM and USE_EMBEDDINGS:
+            emit("status", message="Preparing semantic search "
+                                   "(embedding model)…")
+            embedder = embeddings.load_embedder(dl_progress, stop)
+            if embedder is None:
+                emit("status", message="Embedding model unavailable — "
+                                       "keyword-only retrieval.")
+        index = ResearchIndex(docs, embedder)
+        emit("research_done", num_sources=len(docs),
+             num_chunks=len(index.chunks), semantic=index.semantic)
 
         emit("phase", phase="debate", message="The debate begins.")
         transcript: list[dict] = []

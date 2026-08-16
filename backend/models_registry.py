@@ -16,7 +16,7 @@ from pathlib import Path
 import psutil
 import requests
 
-from .config import MODELS_DIR
+from .config import MODELS_DIR, N_CTX
 
 MODELS = [
     {
@@ -62,9 +62,10 @@ MODELS = [
 QUANT_PREFERENCE = ["Q5_K_M", "Q5_K_S", "Q4_K_M", "Q4_K_S", "IQ4_XS", "Q4_0",
                     "Q3_K_L", "Q3_K_M", "IQ3_M", "Q3_K_S", "Q2_K"]
 
-# Rough runtime overhead on top of the weights file: KV cache + compute
-# buffers + everything else in the process.
-RUNTIME_OVERHEAD_BYTES = int(1.8 * 1024**3)
+# Rough runtime overhead on top of the weights file: compute buffers and
+# everything else in the process, plus a KV cache that grows with the
+# context window (~128 KB per token for an 8B GQA model).
+RUNTIME_OVERHEAD_BYTES = int(0.8 * 1024**3) + N_CTX * 128 * 1024
 
 
 class StopRequested(Exception):
@@ -163,29 +164,27 @@ def pick_quant(model: dict, budget_bytes: int) -> QuantChoice:
     )
 
 
-def ensure_model_file(
-    model: dict,
+def download_file(
+    repo: str,
+    filename: str,
+    size_hint: int,
     progress: Callable[[int, int, str], None],
     stop: threading.Event,
-) -> tuple[Path, str]:
-    """Return (path, description) for the model's GGUF file, downloading it
-    if necessary. `progress(done_bytes, total_bytes, filename)` is called
+) -> Path:
+    """Download one file from a HF repo into MODELS_DIR (skipped if already
+    present). `progress(done_bytes, total_bytes, filename)` is called
     periodically during download."""
-    existing = find_downloaded_file(model)
-    if existing:
-        return existing, f"already downloaded ({existing.name})"
-
-    budget = available_ram_bytes()
-    choice = pick_quant(model, budget)
-    dest_dir = _repo_dir(model["repo"])
+    dest_dir = _repo_dir(repo)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / choice.filename
+    dest = dest_dir / filename
+    if dest.exists():
+        return dest
     part = dest.with_suffix(dest.suffix + ".part")
 
-    url = f"https://huggingface.co/{model['repo']}/resolve/main/{choice.filename}"
+    url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
     with requests.get(url, stream=True, timeout=60, allow_redirects=True) as r:
         r.raise_for_status()
-        total = int(r.headers.get("content-length", 0)) or choice.size_bytes
+        total = int(r.headers.get("content-length", 0)) or size_hint
         done = 0
         last_report = 0
         with open(part, "wb") as f:
@@ -198,6 +197,25 @@ def ensure_model_file(
                 done += len(chunk)
                 if done - last_report >= 16 * 1024 * 1024 or done == total:
                     last_report = done
-                    progress(done, total, choice.filename)
+                    progress(done, total, filename)
     part.rename(dest)
-    return dest, f"downloaded {choice.quant} ({total / 1024**3:.1f} GB)"
+    return dest
+
+
+def ensure_model_file(
+    model: dict,
+    progress: Callable[[int, int, str], None],
+    stop: threading.Event,
+) -> tuple[Path, str]:
+    """Return (path, description) for the model's GGUF file, downloading it
+    if necessary."""
+    existing = find_downloaded_file(model)
+    if existing:
+        return existing, f"already downloaded ({existing.name})"
+
+    budget = available_ram_bytes()
+    choice = pick_quant(model, budget)
+    dest = download_file(model["repo"], choice.filename, choice.size_bytes,
+                         progress, stop)
+    return dest, (f"downloaded {choice.quant} "
+                  f"({choice.size_bytes / 1024**3:.1f} GB)")
