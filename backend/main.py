@@ -232,6 +232,7 @@ async def api_reset():
         raise HTTPException(409, "A debate is still in progress.")
     with manager.lock:
         manager.state = _initial_state()
+    materials.STORE.clear()
     await manager._broadcast({"type": "snapshot", "state": manager.snapshot()})
     return {"ok": True}
 

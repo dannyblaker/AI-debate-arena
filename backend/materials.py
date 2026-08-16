@@ -105,6 +105,10 @@ class MaterialStore:
         with self._lock:
             return self._items.pop(material_id, None) is not None
 
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+
     def summaries(self) -> list[dict]:
         with self._lock:
             return [{"id": m.id, "filename": m.filename, "chars": len(m.text)}
