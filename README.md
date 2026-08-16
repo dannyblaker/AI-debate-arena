@@ -185,7 +185,8 @@ backend/
   models_registry.py model catalog, RAM-aware quant selection, downloads
   llm.py             llama.cpp wrapper (+ fake mode)
   pdf_export.py      PDF transcript
-frontend/            static single-page UI (no build step)
+frontend/            single-page UI — Preact + htm via one vendored
+                     module (frontend/vendor/), still no build step
 ```
 
 ## License

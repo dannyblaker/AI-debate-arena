@@ -1,252 +1,32 @@
-/* AI Debate Arena — frontend. Mirrors backend state from the WebSocket
-   snapshot, then applies incremental events for live streaming. */
+/* AI Debate Arena — frontend (Preact + htm via one vendored module, no
+   build step). The backend state arrives as a WebSocket snapshot and is
+   kept current by incremental events; keyed declarative rendering means
+   DOM nodes persist across updates, so entrance animations play exactly
+   once and updates never flash. */
 
-const $ = (id) => document.getElementById(id);
+import {
+  html, render, useEffect, useReducer, useRef, useState,
+} from "./vendor/preact-htm.module.js";
 
-let CRITERIA = [];      // [{key, label, max}] from /api/system
-let state = null;       // mirror of backend state
-let ws = null;
+const STEP_ORDER = ["model", "research", "prep", "debate", "judging", "done"];
+const STEP_LABELS = { model: "Model", research: "Research", prep: "Prep",
+                      debate: "Debate", judging: "Judging", done: "Verdict" };
 
-/* ---------------- Setup view ---------------- */
+const EXAMPLES = [
+  { label: "driverless cars",
+    topic: "Driverless cars are safe enough for public roads." },
+  { label: "NDIS overhaul",
+    topic: "The Australian government's current overhaul of the NDIS is " +
+           "moving too far and too fast at the expense of vulnerable citizens." },
+  { label: "social media ban",
+    topic: "Social media should be banned for children under 16." },
+];
 
-async function loadSetup() {
-  const [modelsRes, sysRes] = await Promise.all([
-    fetch("/api/models").then((r) => r.json()),
-    fetch("/api/system").then((r) => r.json()),
-  ]);
-  CRITERIA = sysRes.criteria;
-  // The WebSocket snapshot can render judges before this fetch resolves.
-  if (state && state.phase !== "idle") renderJudges();
-  $("ram-info").textContent =
-    `${sysRes.available_ram_gb} GB RAM available — a quantization that fits ` +
-    `in memory will be selected automatically.` +
-    (modelsRes.fake_llm ? "  ⚠ FAKE_LLM mode is on (canned responses)." : "");
+/* ---------------- Backend state mirror ---------------- */
 
-  const list = $("model-list");
-  list.innerHTML = "";
-  for (const m of modelsRes.models) {
-    const opt = document.createElement("label");
-    opt.className = "model-option" + (m.default ? " selected" : "");
-    const badges = [];
-    if (m.uncensored) badges.push(`<span class="badge uncensored">no guardrails</span>`);
-    badges.push(m.downloaded
-      ? `<span class="badge downloaded">✓ downloaded · ${m.downloaded_gb} GB</span>`
-      : `<span class="badge will-download">will download</span>`);
-    opt.innerHTML = `
-      <input type="radio" name="model" value="${m.id}" ${m.default ? "checked" : ""}>
-      <div style="flex:1">
-        <div class="model-name">${m.name} <span class="hint">· ${m.params}</span></div>
-        <div class="model-desc">${m.description}</div>
-      </div>
-      <div>${badges.join(" ")}</div>`;
-    opt.addEventListener("change", () => {
-      document.querySelectorAll(".model-option").forEach((el) => el.classList.remove("selected"));
-      opt.classList.add("selected");
-    });
-    list.appendChild(opt);
-  }
-}
-
-document.querySelectorAll(".example-btn").forEach((b) =>
-  b.addEventListener("click", () => { $("topic").value = b.dataset.topic; }));
-
-/* ---------------- User research materials ---------------- */
-
-async function refreshMaterials() {
-  const res = await fetch("/api/materials").then((r) => r.json());
-  const ul = $("material-list");
-  ul.innerHTML = "";
-  for (const m of res.materials) {
-    const li = document.createElement("li");
-    li.className = "material-item";
-    const name = document.createElement("span");
-    name.textContent = `📄 ${m.filename} (${(m.chars / 1000).toFixed(1)}k chars)`;
-    const del = document.createElement("button");
-    del.className = "material-remove";
-    del.title = "Remove";
-    del.textContent = "✕";
-    del.addEventListener("click", async () => {
-      await fetch(`/api/materials/${m.id}`, { method: "DELETE" });
-      refreshMaterials();
-    });
-    li.append(name, del);
-    ul.appendChild(li);
-  }
-  // Materials-only with zero materials would leave the debaters with no
-  // research at all — untick it when the last document is removed.
-  if (res.materials.length === 0) $("materials-only").checked = false;
-}
-
-$("material-add").addEventListener("click", () => $("material-file").click());
-
-/* XHR instead of fetch: only XHR exposes upload byte progress. */
-function uploadMaterial(file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/materials");
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(Math.round((100 * e.loaded) / e.total));
-    };
-    // All bytes sent — anything from here on is server-side parsing.
-    xhr.upload.onload = () => onProgress(100);
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) return resolve();
-      let detail = xhr.statusText;
-      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch {}
-      reject(new Error(typeof detail === "string" ? detail : JSON.stringify(detail)));
-    };
-    xhr.onerror = () => reject(new Error(`${file.name}: upload failed`));
-    const form = new FormData();
-    form.append("file", file);
-    xhr.send(form);
-  });
-}
-
-function pendingMaterialItem(filename) {
-  const li = document.createElement("li");
-  li.className = "material-item pending";
-  const name = document.createElement("span");
-  name.textContent = `📄 ${filename}`;
-  const status = document.createElement("span");
-  status.className = "material-status";
-  status.textContent = "uploading…";
-  const track = document.createElement("div");
-  track.className = "material-progress-track";
-  const fill = document.createElement("div");
-  fill.className = "material-progress-fill";
-  track.appendChild(fill);
-  li.append(name, status, track);
-  $("material-list").appendChild(li);
-  return {
-    li,
-    progress(pct) {
-      fill.style.width = `${pct}%`;
-      status.textContent = pct < 100 ? `uploading ${pct}%` : "processing…";
-      if (pct >= 100) fill.classList.add("processing");
-    },
-  };
-}
-
-$("material-file").addEventListener("change", async () => {
-  const err = $("material-error");
-  err.hidden = true;
-  const failures = [];
-  let added = 0;
-  $("material-add").disabled = true;
-  for (const file of $("material-file").files) {
-    const item = pendingMaterialItem(file.name);
-    try {
-      await uploadMaterial(file, item.progress);
-      added++;
-    } catch (e) {
-      failures.push(e.message);
-    }
-    item.li.remove();
-    await refreshMaterials(); // each finished file appears right away
-  }
-  // Uploading your own sources usually means you want the debate grounded
-  // in them; switch to materials-only (the user can still untick it).
-  if (added) $("materials-only").checked = true;
-  $("material-add").disabled = false;
-  $("material-file").value = "";
-  if (failures.length) {
-    err.textContent = failures.join(" — ");
-    err.hidden = false;
-  }
-});
-
-$("begin-btn").addEventListener("click", async () => {
-  const topic = $("topic").value.trim();
-  const err = $("setup-error");
-  err.hidden = true;
-  if (topic.length < 8) {
-    err.textContent = "Please enter a debate topic (at least 8 characters).";
-    err.hidden = false;
-    return;
-  }
-  $("begin-btn").disabled = true;
-  try {
-    const res = await fetch("/api/debate/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        topic,
-        model_id: document.querySelector('input[name="model"]:checked').value,
-        pro_personality: $("pro-personality").value,
-        con_personality: $("con-personality").value,
-        rounds: parseInt($("rounds").value, 10),
-        use_web_research: !$("materials-only").checked,
-      }),
-    });
-    if (!res.ok) {
-      const detail = (await res.json()).detail || res.statusText;
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-    }
-  } catch (e) {
-    err.textContent = e.message;
-    err.hidden = false;
-    $("begin-btn").disabled = false;
-  }
-});
-
-$("reset-btn").addEventListener("click", async () => {
-  // Clear the finished debate server-side, or a reload just re-renders it.
-  try { await fetch("/api/debate/reset", { method: "POST" }); } catch {}
-  location.reload();
-});
-$("stop-btn").addEventListener("click", () => fetch("/api/debate/stop", { method: "POST" }));
-
-/* ---------------- WebSocket ---------------- */
-
-function connect() {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onmessage = (msg) => handleEvent(JSON.parse(msg.data));
-  ws.onclose = () => setTimeout(connect, 1500);
-}
-setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 25000);
-
-function handleEvent(ev) {
-  if (ev.type === "snapshot") {
-    state = ev.state;
-    renderAll();
-    return;
-  }
-  if (!state) return;
-  applyEvent(ev);
-
-  switch (ev.type) {
-    case "token": appendToken(ev); break;
-    case "turn_start": renderTranscript(); break;
-    case "turn_end": renderTranscript(); break;
-    case "turn_prep": renderTranscript(); break;
-    case "phase":
-      renderChrome();
-      renderPrep();
-      break;
-    case "status": renderChrome(); break;
-    case "prep_positions":
-    case "prep_start":
-    case "prep_sort_start":
-    case "prep_brief":
-    case "prep_done": renderPrep(); break;
-    case "prep_window": prepWindow(); break;
-    case "prep_quote": prepQuote(); break;
-    case "prep_sort": prepSort(ev); break;
-    case "download_progress": renderDownload(); break;
-    case "research_source": renderResearch(); break;
-    case "research_done": renderResearch(); break;
-    case "judge_start": renderJudges(); break;
-    case "judge_criterion": renderJudges(); break;
-    case "judge_result": renderJudges(); break;
-    case "verdict": renderVerdict(); break;
-    case "error": renderChrome(); break;
-  }
-}
-
-/* Mirror of backend _apply() */
-function applyEvent(ev) {
-  const s = state;
+/* Mirror of backend _apply(): mutates the draft, reducer returns a fresh
+   top-level object so Preact re-renders. */
+function applyEvent(s, ev) {
   switch (ev.type) {
     case "phase": s.phase = ev.phase; s.log.push(ev.message); break;
     case "status": s.log.push(ev.message); break;
@@ -293,7 +73,9 @@ function applyEvent(ev) {
                     label: ev.label, text: "" };
       s.current_prep = null;
       break;
-    case "token": if (s.current) s.current.text += ev.text; break;
+    case "token":
+      if (s.current) s.current.text += ev.text;
+      break;
     case "turn_end":
       s.transcript.push({ speaker: ev.speaker, phase: ev.phase,
                           round: ev.round, label: ev.label, text: ev.text });
@@ -317,408 +99,642 @@ function applyEvent(ev) {
   }
 }
 
-/* ---------------- Rendering ---------------- */
-
-const STEP_ORDER = ["model", "research", "prep", "debate", "judging", "done"];
-
-function renderAll() {
-  const active = state.phase !== "idle";
-  $("setup-view").hidden = active;
-  $("arena-view").hidden = !active;
-  if (!active) { loadSetup(); return; }
-  $("topic-banner").textContent = `“${state.topic}”`;
-  renderChrome();
-  renderDownload();
-  renderResearch();
-  renderPrep();
-  renderTranscript();
-  renderJudges();
-  renderVerdict();
+function reducer(state, ev) {
+  if (ev.type === "snapshot") return ev.state;
+  if (!state) return state;
+  applyEvent(state, ev);
+  return { ...state };
 }
 
-function renderChrome() {
-  if (state.phase !== "idle" && $("arena-view").hidden) renderAll();
-  const phase = state.phase;
-  const idx = STEP_ORDER.indexOf(phase === "error" ? "model" : phase);
-  document.querySelectorAll("#stepper li").forEach((li) => {
-    const i = STEP_ORDER.indexOf(li.dataset.step);
-    li.classList.toggle("active", li.dataset.step === phase ||
-      (phase === "done" && li.dataset.step === "done"));
-    li.classList.toggle("complete", idx > i || phase === "done");
+function useBackendState() {
+  const [state, dispatch] = useReducer(reducer, null);
+  useEffect(() => {
+    let ws;
+    const connect = () => {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onmessage = (msg) => dispatch(JSON.parse(msg.data));
+      ws.onclose = () => setTimeout(connect, 1500);
+    };
+    connect();
+    const ping = setInterval(() => {
+      if (ws && ws.readyState === 1) ws.send("ping");
+    }, 25000);
+    return () => clearInterval(ping);
+  }, []);
+  return state;
+}
+
+/* ---------------- Setup view ---------------- */
+
+/* XHR instead of fetch: only XHR exposes upload byte progress. */
+function uploadMaterial(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/materials");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((100 * e.loaded) / e.total));
+    };
+    // All bytes sent — anything from here on is server-side parsing.
+    xhr.upload.onload = () => onProgress(100);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) return resolve();
+      let detail = xhr.statusText;
+      try { detail = JSON.parse(xhr.responseText).detail || detail; } catch {}
+      reject(new Error(typeof detail === "string" ? detail : JSON.stringify(detail)));
+    };
+    xhr.onerror = () => reject(new Error(`${file.name}: upload failed`));
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
   });
-
-  $("status-line").textContent = state.log.length ? state.log[state.log.length - 1] : "";
-  $("stop-btn").hidden = ["done", "error", "idle"].includes(phase);
-  $("pdf-btn").hidden = !(phase === "done" && state.transcript.length);
-  $("reset-btn").hidden = !["done", "error", "idle"].includes(phase);
-  $("error-panel").hidden = phase !== "error";
-  if (phase === "error") $("error-message").textContent = state.error || "Unknown error";
-  if (phase === "idle") location.reload();  // debate was cancelled
 }
 
-function renderDownload() {
-  const d = state.download;
-  const active = d && state.phase === "model";
-  $("download-panel").hidden = !active;
-  if (!active) return;
-  $("download-bar").style.width = `${d.pct}%`;
+function Setup() {
+  const [models, setModels] = useState([]);
+  const [fakeLlm, setFakeLlm] = useState(false);
+  const [ram, setRam] = useState(null);
+  const [modelId, setModelId] = useState(null);
+  const [topic, setTopic] = useState("");
+  const [proPersonality, setProPersonality] = useState("");
+  const [conPersonality, setConPersonality] = useState("");
+  const [rounds, setRounds] = useState(2);
+  const [materials, setMaterials] = useState([]);
+  const [pending, setPending] = useState([]);
+  const [matsOnly, setMatsOnly] = useState(false);
+  const [matError, setMatError] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef();
+
+  const refreshMaterials = async () => {
+    const res = await fetch("/api/materials").then((r) => r.json());
+    setMaterials(res.materials);
+    // Materials-only with zero materials would leave the debaters with no
+    // research at all — untick it when the last document is removed.
+    if (res.materials.length === 0) setMatsOnly(false);
+  };
+
+  useEffect(() => {
+    fetch("/api/models").then((r) => r.json()).then((d) => {
+      setModels(d.models);
+      setFakeLlm(d.fake_llm);
+      const def = d.models.find((m) => m.default) || d.models[0];
+      if (def) setModelId(def.id);
+    });
+    fetch("/api/system").then((r) => r.json()).then((d) => setRam(d.available_ram_gb));
+    refreshMaterials();
+  }, []);
+
+  const onFiles = async (ev) => {
+    const files = [...ev.target.files];
+    ev.target.value = "";
+    setMatError("");
+    const failures = [];
+    let added = 0;
+    for (const file of files) {
+      const pid = `${Date.now()}-${Math.random()}`;
+      setPending((p) => [...p, { id: pid, name: file.name, pct: 0 }]);
+      try {
+        await uploadMaterial(file, (pct) =>
+          setPending((p) => p.map((x) => (x.id === pid ? { ...x, pct } : x))));
+        added++;
+      } catch (e) {
+        failures.push(e.message);
+      }
+      setPending((p) => p.filter((x) => x.id !== pid));
+      await refreshMaterials(); // each finished file appears right away
+    }
+    // Uploading your own sources usually means you want the debate grounded
+    // in them; switch to materials-only (the user can still untick it).
+    if (added) setMatsOnly(true);
+    if (failures.length) setMatError(failures.join(" — "));
+  };
+
+  const removeMaterial = async (id) => {
+    await fetch(`/api/materials/${id}`, { method: "DELETE" });
+    refreshMaterials();
+  };
+
+  const begin = async () => {
+    setError("");
+    if (topic.trim().length < 8) {
+      setError("Please enter a debate topic (at least 8 characters).");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/debate/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: topic.trim(),
+          model_id: modelId,
+          pro_personality: proPersonality,
+          con_personality: conPersonality,
+          rounds: Number(rounds),
+          use_web_research: !matsOnly,
+        }),
+      });
+      if (!res.ok) {
+        const detail = (await res.json()).detail || res.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+    } catch (e) {
+      setError(e.message);
+      setBusy(false);
+    }
+  };
+
+  return html`
+  <main id="setup-view">
+    <section class="card">
+      <h2>1 · The Motion</h2>
+      <input id="topic" type="text" maxlength="500" value=${topic}
+             onInput=${(e) => setTopic(e.target.value)}
+             placeholder="e.g. Driverless cars are safe enough for public roads" />
+      <p class="hint">Works best phrased as a claim — PRO defends it, CON attacks it.
+        Questions are fine too (PRO argues “yes”, CON argues “no”).</p>
+      <div class="examples">
+        Try:
+        ${EXAMPLES.map((ex) => html`
+          <button key=${ex.label} class="example-btn"
+                  onClick=${() => setTopic(ex.topic)}>${ex.label}</button>`)}
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2 · The Model</h2>
+      <p class="hint">${ram === null
+        ? "Detecting available memory…"
+        : `${ram} GB RAM available — a quantization that fits in memory will ` +
+          `be selected automatically.` +
+          (fakeLlm ? "  ⚠ FAKE_LLM mode is on (canned responses)." : "")}</p>
+      <div id="model-list">
+        ${models.map((m) => html`
+          <label key=${m.id}
+                 class=${"model-option" + (m.id === modelId ? " selected" : "")}>
+            <input type="radio" name="model" value=${m.id}
+                   checked=${m.id === modelId}
+                   onChange=${() => setModelId(m.id)} />
+            <div style="flex:1">
+              <div class="model-name">${m.name} <span class="hint">· ${m.params}</span></div>
+              <div class="model-desc">${m.description}</div>
+            </div>
+            <div>
+              ${m.uncensored && html`<span class="badge uncensored">no guardrails</span>`}
+              ${" "}
+              ${m.downloaded
+                ? html`<span class="badge downloaded">✓ downloaded · ${m.downloaded_gb} GB</span>`
+                : html`<span class="badge will-download">will download</span>`}
+            </div>
+          </label>`)}
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3. Set debater personalities (optional) <span class="optional-tag">optional</span></h2>
+      <div class="debater-grid">
+        <div class="debater-config pro">
+          <h3>FOR the motion <span class="side-tag pro-tag">PRO</span></h3>
+          <textarea maxlength="1000" rows="3" value=${proPersonality}
+                    onInput=${(e) => setProPersonality(e.target.value)}
+                    placeholder="e.g. polite and considerate"></textarea>
+        </div>
+        <div class="debater-config con">
+          <h3>AGAINST the motion <span class="side-tag con-tag">CON</span></h3>
+          <textarea maxlength="1000" rows="3" value=${conPersonality}
+                    onInput=${(e) => setConPersonality(e.target.value)}
+                    placeholder="e.g. sassy and sarcastic"></textarea>
+        </div>
+      </div>
+      <div class="rounds-row">
+        <label for="rounds">Rebuttal rounds:</label>
+        <select id="rounds" value=${rounds}
+                onChange=${(e) => setRounds(e.target.value)}>
+          ${[1, 2, 3, 4].map((n) => html`<option key=${n} value=${n}>${n}</option>`)}
+        </select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>4 · Your Research <span class="optional-tag">optional</span></h2>
+      <p class="hint">Give the debaters your own source material — PDF, Word
+        (.docx), text, Markdown or HTML files. They are indexed alongside the
+        automatic Wikipedia ${"&"} web research, and cited by filename.</p>
+      <input ref=${fileRef} type="file" multiple hidden
+             accept=".pdf,.docx,.txt,.md,.markdown,.rst,.csv,.log,.html,.htm"
+             onChange=${onFiles} />
+      <button id="material-add" disabled=${pending.length > 0}
+              onClick=${() => fileRef.current && fileRef.current.click()}>＋ Add documents</button>
+      <ul id="material-list">
+        ${materials.map((m) => html`
+          <li key=${m.id} class="material-item">
+            <span>📄 ${m.filename} (${(m.chars / 1000).toFixed(1)}k chars)</span>
+            <button class="material-remove" title="Remove"
+                    onClick=${() => removeMaterial(m.id)}>✕</button>
+          </li>`)}
+        ${pending.map((x) => html`
+          <li key=${x.id} class="material-item pending">
+            <span>📄 ${x.name}</span>
+            <span class="material-status">${x.pct < 100 ? `uploading ${x.pct}%` : "processing…"}</span>
+            <div class="material-progress-track">
+              <div class=${"material-progress-fill" + (x.pct >= 100 ? " processing" : "")}
+                   style=${`width:${x.pct}%`}></div>
+            </div>
+          </li>`)}
+      </ul>
+      <label class="hint checkbox-row">
+        <input type="checkbox" checked=${matsOnly}
+               onChange=${(e) => setMatsOnly(e.target.checked)} />
+        Use only my materials (skip Wikipedia ${"&"} web search)
+      </label>
+      ${matError && html`<p class="error">${matError}</p>`}
+    </section>
+
+    <div class="begin-row">
+      <button class="primary big" disabled=${busy} onClick=${begin}>Begin Debate</button>
+      ${error && html`<p class="error">${error}</p>`}
+    </div>
+  </main>`;
+}
+
+/* ---------------- Arena: chrome ---------------- */
+
+function Stepper({ phase }) {
+  const idx = STEP_ORDER.indexOf(phase === "error" ? "model" : phase);
+  return html`
+  <ol id="stepper">
+    ${STEP_ORDER.map((step, i) => {
+      const active = step === phase || (phase === "done" && step === "done");
+      const complete = idx > i || phase === "done";
+      return html`
+        <li key=${step}
+            class=${(active ? "active" : "") + (complete ? " complete" : "")}>
+          ${STEP_LABELS[step]}
+        </li>`;
+    })}
+  </ol>`;
+}
+
+function DownloadPanel({ download, phase }) {
+  if (!download || phase !== "model") return null;
   const gb = (n) => (n / 1024 ** 3).toFixed(2);
-  $("download-label").textContent =
-    `${d.filename} — ${gb(d.done)} / ${gb(d.total)} GB (${d.pct}%)`;
+  return html`
+  <section id="download-panel" class="card">
+    <h2>Downloading model</h2>
+    <div class="progress-track">
+      <div class="progress-fill" style=${`width:${download.pct}%`}></div>
+    </div>
+    <p class="hint">${download.filename} — ${gb(download.done)} / ${gb(download.total)} GB (${download.pct}%)</p>
+  </section>`;
 }
 
-function renderResearch() {
-  const show = state.sources.length > 0 || state.phase === "research";
-  $("research-panel").hidden = !show;
-  if (!show) return;
-  $("research-summary").textContent = state.num_chunks
+function ResearchPanel({ state }) {
+  if (!(state.sources.length > 0 || state.phase === "research")) return null;
+  const summary = state.num_chunks
     ? `${state.sources.length} sources collected · ${state.num_chunks} passages indexed` +
       `${state.semantic ? " (hybrid keyword + semantic search)" : ""} for the debaters.`
     : state.phase === "research"
       ? "Collecting articles and encyclopedia entries…"
       : `${state.sources.length} sources collected.`;
-  const ul = $("sources");
-  ul.innerHTML = "";
-  for (const s of state.sources) {
-    const li = document.createElement("li");
-    const label = `${s.title} (${(s.chars / 1000).toFixed(1)}k chars)`;
-    if (s.url) {
-      const a = document.createElement("a");
-      a.href = s.url; a.target = "_blank"; a.rel = "noopener";
-      a.textContent = label;
-      li.appendChild(a);
-    } else {
-      li.textContent = `📄 ${label}`;
-      const badge = document.createElement("span");
-      badge.className = "badge yours";
-      badge.textContent = "your material";
-      li.append(" ", badge);
-    }
-    ul.appendChild(li);
-  }
+  return html`
+  <section id="research-panel" class="card">
+    <h2>📚 Research</h2>
+    <p class="hint">${summary}</p>
+    <ul id="sources">
+      ${state.sources.map((s, i) => html`
+        <li key=${i}>
+          ${s.url
+            ? html`<a href=${s.url} target="_blank" rel="noopener">
+                ${s.title} (${(s.chars / 1000).toFixed(1)}k chars)</a>`
+            : html`📄 ${s.title} (${(s.chars / 1000).toFixed(1)}k chars)${" "}
+                <span class="badge yours">your material</span>`}
+        </li>`)}
+    </ul>
+  </section>`;
 }
 
-/* ---------------- Case prep panel ---------------- */
+/* ---------------- Arena: case prep ---------------- */
 
-function quoteCard(q, idx) {
-  const d = document.createElement("div");
-  d.className = "quote-card";
-  d.dataset.idx = idx;
-  d.title = `${q.quote} — ${q.source}`;
-  d.textContent = `“${q.quote.length > 90 ? q.quote.slice(0, 90) + "…" : q.quote}”`;
-  return d;
+function QuoteCard({ q, extra }) {
+  const text = q.quote.length > 90 ? q.quote.slice(0, 90) + "…" : q.quote;
+  return html`
+  <div class=${"quote-card" + (extra ? ` ${extra}` : "")}
+       title=${`${q.quote} — ${q.source}`}>“${text}”</div>`;
 }
 
-function updatePrepHint() {
-  const p = state.prep;
-  let hint = "";
-  if (!p) hint = "clarifying the clash…";
-  else if (p.stage === "positions") hint = "positions set";
-  else if (p.stage === "mining") hint = `mining evidence — ${p.quotes.length} quotes so far`;
-  else if (p.stage === "sorting") hint = `sorting evidence ${p.sort_done}/${p.quotes.length}`;
-  else if (p.stage === "done") {
-    const n = (side) => (p.briefs[side] || []).length;
-    hint = `complete — PRO briefs ${n("pro")} quotes · CON briefs ${n("con")}`;
-  }
-  $("prep-hint").textContent = hint;
+function prepHint(p) {
+  if (!p) return "clarifying the clash…";
+  if (p.stage === "positions") return "positions set";
+  if (p.stage === "mining") return `mining evidence — ${p.quotes.length} quotes so far`;
+  if (p.stage === "sorting") return `sorting evidence ${p.sort_done}/${p.quotes.length}`;
+  const n = (side) => (p.briefs[side] || []).length;
+  return `complete — PRO briefs ${n("pro")} quotes · CON briefs ${n("con")}`;
 }
 
-function updateMiningChrome() {
-  const p = state.prep;
-  $("prep-mining-label").textContent = p.window
-    ? `Scanning passage ${p.window} of ${p.total_windows} — ${p.source}`
-    : "Preparing to scan the source material…";
-  $("prep-bar").style.width =
-    p.total_windows ? `${(100 * p.window) / p.total_windows}%` : "0%";
-  $("prep-quote-count").textContent =
-    `${p.quotes.length} verbatim quote${p.quotes.length === 1 ? "" : "s"} verified against the source`;
-  updatePrepHint();
+function PrepMining({ p }) {
+  const feedRef = useRef();
+  useEffect(() => {
+    const feed = feedRef.current;
+    if (feed) feed.scrollTop = feed.scrollHeight;
+  }, [p.quotes.length]);
+  return html`
+  <div id="prep-mining">
+    <div class="prep-scan-row">
+      <div class="scan-doc"><div class="scan-line"></div></div>
+      <div class="prep-scan-info">
+        <p class="hint">${p.window
+          ? `Scanning passage ${p.window} of ${p.total_windows} — ${p.source}`
+          : "Preparing to scan the source material…"}</p>
+        <div class="progress-track">
+          <div class="progress-fill"
+               style=${`width:${p.total_windows ? (100 * p.window) / p.total_windows : 0}%`}></div>
+        </div>
+        <p class="hint">${p.quotes.length} verbatim quote${p.quotes.length === 1 ? "" : "s"} verified against the source</p>
+      </div>
+    </div>
+    <div class="quote-feed" ref=${feedRef}>
+      ${p.quotes.map((q, i) => html`<${QuoteCard} key=${i} q=${q} extra="pop" />`)}
+    </div>
+  </div>`;
 }
 
-function updateSortChrome() {
-  const p = state.prep;
-  $("prep-sort-label").textContent =
-    `Each quote is weighed — reasoning first — and dealt to the side it truly supports (${p.sort_done}/${p.quotes.length})`;
-  let pro = 0, con = 0, waiting = 0;
-  for (const q of p.quotes) {
-    if (q.side === "pro") pro++;
-    else if (q.side === "con") con++;
-    else if (q.side === null) waiting++;
-  }
-  $("sort-count-pro").textContent = pro || "";
-  $("sort-count-con").textContent = con || "";
-  $("sort-count-neutral").textContent = waiting ? `${waiting} waiting` : "";
-  updatePrepHint();
+function PrepSorting({ p }) {
+  const count = (side) => p.quotes.filter((q) => q.side === side).length;
+  const waiting = p.quotes.filter((q) => q.side === null).length;
+  return html`
+  <div id="prep-sorting">
+    <p class="hint">
+      Each quote is weighed — reasoning first — and dealt to the side it
+      truly supports (${p.sort_done}/${p.quotes.length})
+    </p>
+    <div class="sort-columns">
+      <div class="sort-col pro">
+        <h4>PRO's pile <span class="sort-count">${count("pro") || ""}</span></h4>
+        <div class="sort-cards">
+          ${p.quotes.map((q, i) => q.side === "pro" &&
+            html`<${QuoteCard} key=${i} q=${q} extra="fly-left" />`)}
+        </div>
+      </div>
+      <div class="sort-col neutral">
+        <h4>In review <span class="sort-count">${waiting ? `${waiting} waiting` : ""}</span></h4>
+        <div class="sort-cards">
+          ${p.quotes.map((q, i) => (q.side === null || q.side === "neutral") &&
+            html`<${QuoteCard} key=${i} q=${q}
+                   extra=${q.side === null ? "unsorted" : "neutral-sorted pop"} />`)}
+        </div>
+      </div>
+      <div class="sort-col con">
+        <h4>CON's pile <span class="sort-count">${count("con") || ""}</span></h4>
+        <div class="sort-cards">
+          ${p.quotes.map((q, i) => q.side === "con" &&
+            html`<${QuoteCard} key=${i} q=${q} extra="fly-right" />`)}
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
-function renderPrep() {
-  const p = state.prep;
-  const show = p || state.phase === "prep";
-  $("prep-panel").hidden = !show;
-  if (!show) return;
-  $("prep-clarifying").hidden = !!p;
-  $("prep-positions").hidden = !p;
-  updatePrepHint();
-  if (!p) {
-    for (const id of ["prep-mining", "prep-sorting", "prep-briefs"]) $(id).hidden = true;
-    return;
-  }
-  $("prep-pos-pro").textContent = p.positions.pro;
-  $("prep-pos-con").textContent = p.positions.con;
-
-  $("prep-mining").hidden = p.stage !== "mining";
-  if (p.stage === "mining") {
-    const feed = $("prep-quote-feed");
-    feed.innerHTML = "";
-    p.quotes.forEach((q, i) => feed.appendChild(quoteCard(q, i)));
-    feed.scrollTop = feed.scrollHeight;
-    updateMiningChrome();
-  }
-
-  $("prep-sorting").hidden = p.stage !== "sorting";
-  if (p.stage === "sorting") {
-    for (const col of ["pro", "neutral", "con"]) $(`sort-${col}`).innerHTML = "";
-    p.quotes.forEach((q, i) => {
-      const card = quoteCard(q, i);
-      if (q.side === null) card.classList.add("unsorted");
-      if (q.side === "neutral") card.classList.add("neutral-sorted");
-      const col = q.side === "pro" ? "sort-pro"
-        : q.side === "con" ? "sort-con" : "sort-neutral";
-      $(col).appendChild(card);
-    });
-    updateSortChrome();
-  }
-
-  $("prep-briefs").hidden = p.stage !== "done";
-  if (p.stage === "done") {
-    for (const side of ["pro", "con"]) {
-      const ol = $(`brief-${side}`);
-      ol.innerHTML = "";
-      for (const q of p.briefs[side] || []) {
-        const li = document.createElement("li");
-        li.textContent = `“${q.quote}”`;
-        li.title = q.source;
-        ol.appendChild(li);
-      }
-    }
-  }
+function PrepBriefs({ p }) {
+  return html`
+  <div id="prep-briefs">
+    <p class="hint">Each side's final evidence brief — their strongest verbatim quotes:</p>
+    <div class="brief-columns">
+      ${["pro", "con"].map((side) => html`
+        <div key=${side} class=${`brief-col ${side}`}>
+          <h4>${side.toUpperCase()}'s brief</h4>
+          <ol>
+            ${(p.briefs[side] || []).map((q, i) => html`
+              <li key=${i} title=${q.source}>“${q.quote}”</li>`)}
+          </ol>
+        </div>`)}
+    </div>
+  </div>`;
 }
 
-/* Targeted updates so each event animates instead of re-rendering. */
-
-function prepWindow() {
-  if (!state.prep || $("prep-mining").hidden) { renderPrep(); return; }
-  updateMiningChrome();
+function PrepPanel({ prep: p, phase }) {
+  if (!p && phase !== "prep") return null;
+  return html`
+  <section id="prep-panel" class="card">
+    <details id="prep-details" open>
+      <summary>
+        <span class="prep-title">🗂 Case Preparation</span>
+        <span class="hint">${prepHint(p)}</span>
+      </summary>
+      ${!p && html`
+        <div class="prep-clarifying">
+          <span class="scale-anim">⚖️</span> Clarifying what each side must
+          prove<span class="dots"></span>
+        </div>`}
+      ${p && html`
+        <div class="prep-positions">
+          <div class="position-card pro"><b>PRO must prove</b><span>${p.positions.pro}</span></div>
+          <div class="position-card con"><b>CON must prove</b><span>${p.positions.con}</span></div>
+        </div>`}
+      ${p && p.stage === "mining" && html`<${PrepMining} p=${p} />`}
+      ${p && p.stage === "sorting" && html`<${PrepSorting} p=${p} />`}
+      ${p && p.stage === "done" && html`<${PrepBriefs} p=${p} />`}
+    </details>
+  </section>`;
 }
 
-function prepQuote() {
-  const p = state.prep;
-  if (!p || $("prep-mining").hidden) { renderPrep(); return; }
-  const i = p.quotes.length - 1;
-  const card = quoteCard(p.quotes[i], i);
-  card.classList.add("pop");
-  const feed = $("prep-quote-feed");
-  feed.appendChild(card);
-  feed.scrollTop = feed.scrollHeight;
-  updateMiningChrome();
-}
+/* ---------------- Arena: transcript ---------------- */
 
-function prepSort(ev) {
-  const p = state.prep;
-  if (!p || $("prep-sorting").hidden) { renderPrep(); return; }
-  const old = document.querySelector(`#sort-neutral .quote-card[data-idx="${ev.index}"]`);
-  if (old) old.remove();
-  const card = quoteCard(p.quotes[ev.index], ev.index);
-  if (ev.side === "pro") {
-    card.classList.add("fly-left");
-    $("sort-pro").prepend(card);
-  } else if (ev.side === "con") {
-    card.classList.add("fly-right");
-    $("sort-con").prepend(card);
-  } else {
-    card.classList.add("neutral-sorted", "pop");
-    $("sort-neutral").prepend(card);
-  }
-  updateSortChrome();
-}
-
-function turnDiv(turn, speaking) {
-  const div = document.createElement("div");
-  div.className = `turn ${turn.speaker}${speaking ? " speaking" : ""}`;
-  const label = document.createElement("div");
-  label.className = "turn-label";
-  label.textContent = turn.label;
-  const text = document.createElement("div");
-  text.className = "turn-text";
-  text.textContent = turn.text;
-  div.append(label, text);
-  return div;
+function Turn({ turn, speaking }) {
+  return html`
+  <div class=${`turn ${turn.speaker}${speaking ? " speaking" : ""}`}>
+    <div class="turn-label">${turn.label}</div>
+    <div class="turn-text">${turn.text}</div>
+  </div>`;
 }
 
 /* Placeholder bubble shown while a debater is researching/planning the
    speech it has not started delivering yet. */
-function prepTurnDiv(p) {
-  const div = document.createElement("div");
-  div.className = `turn ${p.speaker} preparing`;
-  const label = document.createElement("div");
-  label.className = "turn-label";
-  label.textContent = p.label;
-  const body = document.createElement("div");
-  const msg = document.createElement("span");
-  msg.className = "prep-msg";
-  msg.innerHTML = p.queries.length
-    ? '🔍 searching the research library<span class="dots"></span>'
-    : '💭 planning this speech<span class="dots"></span>';
-  body.appendChild(msg);
-  if (p.queries.length) {
-    const chips = document.createElement("div");
-    chips.className = "query-chips";
-    for (const q of p.queries) {
-      const chip = document.createElement("span");
-      chip.className = "query-chip";
-      chip.textContent = q;
-      chips.appendChild(chip);
-    }
-    body.appendChild(chips);
-  }
-  div.append(label, body);
-  return div;
+function PrepBubble({ p }) {
+  return html`
+  <div class=${`turn ${p.speaker} preparing`}>
+    <div class="turn-label">${p.label}</div>
+    <div>
+      <span class="prep-msg">
+        ${p.queries.length ? "🔍 searching the research library" : "💭 planning this speech"}<span class="dots"></span>
+      </span>
+      ${p.queries.length > 0 && html`
+        <div class="query-chips">
+          ${p.queries.map((q, i) => html`<span key=${i} class="query-chip">${q}</span>`)}
+        </div>`}
+    </div>
+  </div>`;
 }
 
-function renderTranscript() {
-  const show = state.transcript.length > 0 || state.current || state.current_prep;
-  $("debate-panel").hidden = !show;
-  if (!show) return;
-  const box = $("transcript");
-  box.innerHTML = "";
-  for (const t of state.transcript) box.appendChild(turnDiv(t, false));
-  if (state.current) {
-    const div = turnDiv(state.current, true);
-    div.id = "current-turn";
-    box.appendChild(div);
-  } else if (state.current_prep) {
-    box.appendChild(prepTurnDiv(state.current_prep));
-  }
-  updateJumpBtn();
+function Transcript({ transcript, current, current_prep }) {
+  if (!transcript.length && !current && !current_prep) return null;
+  return html`
+  <section id="debate-panel">
+    <div id="transcript">
+      ${transcript.map((t) => html`<${Turn} key=${t.label} turn=${t} />`)}
+      ${current && html`<${Turn} key=${current.label} turn=${current} speaking=${true} />`}
+      ${!current && current_prep &&
+        html`<${PrepBubble} key=${`prep-${current_prep.label}`} p=${current_prep} />`}
+    </div>
+  </section>`;
 }
 
-function appendToken() {
-  const div = document.querySelector("#current-turn .turn-text");
-  if (div && state.current) {
-    div.textContent = state.current.text;
-    updateJumpBtn();
-  } else {
-    renderTranscript();
-  }
+/* ---------------- Arena: judging & verdict ---------------- */
+
+function JudgeCard({ judge: j, criteria }) {
+  const partial = j.partial || {};
+  const next = criteria.find((c) => !partial[c.key]);
+  return html`
+  <div class="judge-card">
+    <h3>${j.name}</h3>
+    ${j.status === "waiting" && html`<div class="judge-status">waiting</div>`}
+    ${j.status === "deliberating" && html`
+      <div class="judge-status deliberating">
+        ${next ? `scoring ${next.label}` : "writing summary"}
+      </div>`}
+    ${j.status === "done" && html`<div class="judge-status">ballot in</div>`}
+    ${j.status !== "waiting" && criteria.map((c) => {
+      let p, q, rp, rq;
+      if (j.ballot) {
+        p = j.ballot.scores.pro[c.key];
+        q = j.ballot.scores.con[c.key];
+        rp = (j.ballot.reasons?.pro || {})[c.key];
+        rq = (j.ballot.reasons?.con || {})[c.key];
+      } else if (partial[c.key]) {
+        p = partial[c.key].pro.score;
+        q = partial[c.key].con.score;
+        rp = partial[c.key].pro.reasoning;
+        rq = partial[c.key].con.reasoning;
+      } else {
+        return null;
+      }
+      return html`
+      <div key=${c.key} class="crit-row">
+        <div class="crit-name"><span>${c.label}</span><span>${p} · ${q} / ${c.max}</span></div>
+        <div class="crit-bars">
+          <div class="crit-bar pro"><div style=${`width:${Math.min(100, (100 * p) / c.max)}%`}></div></div>
+          <div class="crit-bar con"><div style=${`width:${Math.min(100, (100 * q) / c.max)}%`}></div></div>
+        </div>
+        ${rp && html`<div class="crit-reason pro-reason"><b>PRO ${p}/${c.max}</b> — ${rp}</div>`}
+        ${rq && html`<div class="crit-reason con-reason"><b>CON ${q}/${c.max}</b> — ${rq}</div>`}
+      </div>`;
+    })}
+    ${j.ballot && html`
+      <div class="judge-total">
+        <span class="pro-score">PRO ${j.ballot.totals.pro}</span>
+        <span class="con-score">CON ${j.ballot.totals.con}</span>
+      </div>
+      ${j.ballot.summary && html`
+        <div class="judge-summary"><h4>The Judge's Summary</h4>${j.ballot.summary}</div>`}`}
+  </div>`;
+}
+
+function JudgingPanel({ judges, criteria }) {
+  if (!judges.some((j) => j.status !== "waiting")) return null;
+  return html`
+  <section id="judging-panel">
+    <h2 class="section-title">⚖️ The Judge's Ballot</h2>
+    <div id="judges" class="judges-grid">
+      ${judges.map((j) => html`<${JudgeCard} key=${j.id} judge=${j} criteria=${criteria} />`)}
+    </div>
+  </section>`;
+}
+
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+function VerdictPanel({ verdict: v, judges }) {
+  if (!v) return null;
+  const cls = v.winner === "pro" ? "pro-wins" : v.winner === "con" ? "con-wins" : "";
+  const banner = v.winner === "pro" ? "🏆 PRO wins — the motion carries!"
+    : v.winner === "con" ? "🏆 CON wins — the motion falls!"
+    : "🤝 It's a tie!";
+  return html`
+  <section id="verdict-panel">
+    <div id="verdict-banner" class=${cls}>${banner}</div>
+    <div id="verdict-detail">
+      ${capitalize(v.method)}.<br />
+      ${judges.length > 1 && html`Ballots — PRO ${v.ballots_won.pro} · CON ${v.ballots_won.con}  |  `}
+      Total points — PRO ${v.totals.pro} · CON ${v.totals.con} (of ${judges.length * 100})
+    </div>
+  </section>`;
+}
+
+/* ---------------- Arena: actions & jump button ---------------- */
+
+function Actions({ state }) {
+  const finished = ["done", "error", "idle"].includes(state.phase);
+  return html`
+  <div class="arena-actions">
+    ${!finished && html`
+      <button class="danger"
+              onClick=${() => fetch("/api/debate/stop", { method: "POST" })}>■ Stop debate</button>`}
+    ${state.phase === "done" && state.transcript.length > 0 && html`
+      <a class="button" href="/api/export/pdf" download>⬇ Export PDF transcript</a>`}
+    ${finished && html`
+      <button onClick=${async () => {
+        // Clear the finished debate server-side; the broadcast snapshot
+        // flips the app back to the setup view.
+        try { await fetch("/api/debate/reset", { method: "POST" }); } catch {}
+      }}>↻ New debate</button>`}
+  </div>`;
 }
 
 /* The page never scrolls on its own — the reader scrolls freely while text
    streams in. A floating button offers a jump to the newest text instead. */
-const jumpBtn = $("jump-btn");
-function updateJumpBtn() {
-  const streaming = state && state.current;
+function JumpButton({ streaming }) {
+  const [, poke] = useState(0);
+  useEffect(() => {
+    const onScroll = () => poke((x) => x + 1);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   const atBottom = window.innerHeight + window.scrollY >=
     document.body.scrollHeight - 200;
-  jumpBtn.hidden = !streaming || atBottom;
-}
-jumpBtn.addEventListener("click", () =>
-  window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
-window.addEventListener("scroll", updateJumpBtn, { passive: true });
-
-function renderJudges() {
-  const started = state.judges.some((j) => j.status !== "waiting");
-  $("judging-panel").hidden = !started;
-  if (!started) return;
-  const grid = $("judges");
-  grid.innerHTML = "";
-  for (const j of state.judges) {
-    const card = document.createElement("div");
-    card.className = "judge-card";
-    let html = `<h3>${j.name}</h3>`;
-    const partial = j.partial || {};
-    if (j.status === "waiting") {
-      html += `<div class="judge-status">waiting</div>`;
-    } else {
-      if (j.status === "deliberating") {
-        const next = CRITERIA.find((c) => !partial[c.key]);
-        html += `<div class="judge-status deliberating">${
-          next ? `scoring ${next.label}` : "writing summary"}</div>`;
-      } else {
-        html += `<div class="judge-status">ballot in</div>`;
-      }
-      for (const c of CRITERIA) {
-        let p, q, rp, rq;
-        if (j.ballot) {
-          p = j.ballot.scores.pro[c.key];
-          q = j.ballot.scores.con[c.key];
-          rp = (j.ballot.reasons?.pro || {})[c.key];
-          rq = (j.ballot.reasons?.con || {})[c.key];
-        } else if (partial[c.key]) {
-          p = partial[c.key].pro.score;
-          q = partial[c.key].con.score;
-          rp = partial[c.key].pro.reasoning;
-          rq = partial[c.key].con.reasoning;
-        } else {
-          continue;
-        }
-        html += `
-          <div class="crit-row">
-            <div class="crit-name"><span>${c.label}</span><span>${p} · ${q} / ${c.max}</span></div>
-            <div class="crit-bars">
-              <div class="crit-bar pro"><div style="width:${(100 * p) / c.max}%"></div></div>
-              <div class="crit-bar con"><div style="width:${(100 * q) / c.max}%"></div></div>
-            </div>
-            ${rp ? `<div class="crit-reason pro-reason"><b>PRO ${p}/${c.max}</b> — ${escapeHtml(rp)}</div>` : ""}
-            ${rq ? `<div class="crit-reason con-reason"><b>CON ${q}/${c.max}</b> — ${escapeHtml(rq)}</div>` : ""}
-          </div>`;
-      }
-      if (j.ballot) {
-        const b = j.ballot;
-        html += `<div class="judge-total">
-          <span class="pro-score">PRO ${b.totals.pro}</span>
-          <span class="con-score">CON ${b.totals.con}</span></div>`;
-        if (b.summary) {
-          html += `<div class="judge-summary">
-            <h4>The Judge's Summary</h4>${escapeHtml(b.summary)}</div>`;
-        }
-      }
-    }
-    card.innerHTML = html;
-    grid.appendChild(card);
-  }
+  if (!streaming || atBottom) return null;
+  return html`
+  <button id="jump-btn"
+          onClick=${() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })}>
+    ↓ Jump to latest
+  </button>`;
 }
 
-function renderVerdict() {
-  const v = state.verdict;
-  $("verdict-panel").hidden = !v;
-  if (!v) return;
-  const banner = $("verdict-banner");
-  banner.className = "";
-  if (v.winner === "pro") {
-    banner.classList.add("pro-wins");
-    banner.textContent = "🏆 PRO wins — the motion carries!";
-  } else if (v.winner === "con") {
-    banner.classList.add("con-wins");
-    banner.textContent = "🏆 CON wins — the motion falls!";
-  } else {
-    banner.textContent = "🤝 It's a tie!";
-  }
-  const ballotsLine = state.judges.length > 1
-    ? `Ballots — PRO ${v.ballots_won.pro} · CON ${v.ballots_won.con} &nbsp;|&nbsp; `
-    : "";
-  $("verdict-detail").innerHTML =
-    `${escapeHtml(capitalize(v.method))}.<br>` + ballotsLine +
-    `Total points — PRO ${v.totals.pro} · CON ${v.totals.con} (of ${state.judges.length * 100})`;
+/* ---------------- App ---------------- */
+
+function Arena({ state, criteria }) {
+  return html`
+  <main id="arena-view">
+    <div id="topic-banner">“${state.topic}”</div>
+    <${Stepper} phase=${state.phase} />
+    <${DownloadPanel} download=${state.download} phase=${state.phase} />
+    <${ResearchPanel} state=${state} />
+    <${PrepPanel} prep=${state.prep} phase=${state.phase} />
+    <${Transcript} transcript=${state.transcript} current=${state.current}
+                   current_prep=${state.current_prep} />
+    <${JudgingPanel} judges=${state.judges} criteria=${criteria} />
+    <${VerdictPanel} verdict=${state.verdict} judges=${state.judges} />
+    ${state.phase === "error" && html`
+      <section id="error-panel" class="card error-card">
+        <h2>Something went wrong</h2>
+        <p id="error-message">${state.error || "Unknown error"}</p>
+      </section>`}
+    <${Actions} state=${state} />
+    <p id="status-line" class="hint">${state.log.length ? state.log[state.log.length - 1] : ""}</p>
+  </main>`;
 }
 
-function escapeHtml(s) {
-  const d = document.createElement("div");
-  d.textContent = s;
-  return d.innerHTML;
+function App() {
+  const state = useBackendState();
+  const [criteria, setCriteria] = useState([]);
+  useEffect(() => {
+    fetch("/api/system").then((r) => r.json()).then((d) => setCriteria(d.criteria));
+  }, []);
+  const active = state && state.phase !== "idle";
+  return html`
+    ${active
+      ? html`<${Arena} state=${state} criteria=${criteria} />`
+      : html`<${Setup} key=${state ? "ready" : "loading"} />`}
+    <${JumpButton} streaming=${!!(state && state.current)} />`;
 }
-const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-/* ---------------- Boot ---------------- */
-loadSetup();
-refreshMaterials();
-connect();
+render(html`<${App} />`, document.getElementById("root"));
