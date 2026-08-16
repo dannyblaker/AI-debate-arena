@@ -9,6 +9,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.gpu
+      args:
+        # Compute capability of your GPU without the dot (8.6 -> "86");
+        # find it with: nvidia-smi --query-gpu=compute_cap --format=csv
+        # Use "all-major" to build a portable (but several GB larger) image.
+        CUDA_ARCHS: "86"
     environment:
       # -1 offloads every model layer to the GPU; lower it (e.g. 20) if the
       # model doesn't fit in VRAM and you want a CPU/GPU split.

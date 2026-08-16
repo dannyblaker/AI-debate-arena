@@ -9,20 +9,29 @@
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-dev build-essential cmake git \
+        python3 python3-pip python3-dev build-essential ninja-build git \
     && rm -rf /var/lib/apt/lists/*
 
-# all-major: build kernels for every mainstream GPU architecture, since the
-# build machine's GPU (if any) is not visible during `docker build`.
-ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=all-major"
+# Ubuntu 22.04's cmake (3.22) predates the `all-major` CUDA-architectures
+# keyword (CMake 3.23+), so take a current CMake from pip instead.
+RUN pip3 install --no-cache-dir "cmake>=3.26"
+
+# Compute capability to compile kernels for (`nvidia-smi --query-gpu=compute_cap
+# --format=csv` prints yours; drop the dot, e.g. 8.6 -> 86). Building a single
+# architecture keeps the image several GB smaller than `all-major`; override
+# with --build-arg CUDA_ARCHS=all-major for a portable image.
+ARG CUDA_ARCHS=86
+ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
 RUN pip3 wheel --no-cache-dir --wheel-dir /wheels "llama-cpp-python>=0.3.2"
 
 # --- Stage 2: runtime ------------------------------------------------------
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 # fonts-dejavu-core: Unicode font for PDF export.
+# libgomp1: OpenMP runtime that llama.cpp links against (present in the devel
+# base image but not in the slim runtime one).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip fonts-dejavu-core \
+        python3 python3-pip fonts-dejavu-core libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
