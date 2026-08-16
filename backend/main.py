@@ -6,12 +6,13 @@ import copy
 import threading
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (FastAPI, HTTPException, UploadFile, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import models_registry, pdf_export
+from . import materials, models_registry, pdf_export
 from .config import FAKE_LLM, FRONTEND_DIR, MODELS_DIR
 from .debate import DebateConfig, run_pipeline
 from .judging import CRITERIA, JUDGES
@@ -70,7 +71,9 @@ class DebateManager:
         elif t == "download_progress":
             s["download"] = {k: ev[k] for k in ("filename", "done", "total", "pct")}
         elif t == "research_source":
-            s["sources"].append({k: ev[k] for k in ("title", "url", "chars")})
+            s["sources"].append({"title": ev["title"], "url": ev["url"],
+                                 "chars": ev["chars"],
+                                 "kind": ev.get("kind", "web")})
         elif t == "research_done":
             s["num_chunks"] = ev["num_chunks"]
         elif t == "turn_start":
@@ -151,6 +154,29 @@ class StartRequest(BaseModel):
     pro_personality: str = Field(default="", max_length=1000)
     con_personality: str = Field(default="", max_length=1000)
     rounds: int = Field(default=2, ge=1, le=4)
+    use_web_research: bool = True
+
+
+@app.post("/api/materials")
+async def api_upload_material(file: UploadFile):
+    data = await file.read()
+    try:
+        mat = materials.STORE.add(file.filename or "upload", data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": mat.id, "filename": mat.filename, "chars": len(mat.text)}
+
+
+@app.get("/api/materials")
+def api_list_materials():
+    return {"materials": materials.STORE.summaries()}
+
+
+@app.delete("/api/materials/{material_id}")
+def api_delete_material(material_id: str):
+    if not materials.STORE.remove(material_id):
+        raise HTTPException(404, "No such material.")
+    return {"ok": True}
 
 
 @app.get("/api/models")
@@ -184,6 +210,8 @@ def api_start(req: StartRequest):
         pro_personality=req.pro_personality.strip(),
         con_personality=req.con_personality.strip(),
         rounds=req.rounds,
+        materials=materials.STORE.as_docs(),
+        use_web_research=req.use_web_research,
     )
     manager.start(cfg, model)
     return {"ok": True}

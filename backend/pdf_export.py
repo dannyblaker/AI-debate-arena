@@ -65,7 +65,9 @@ def build_pdf(state: dict) -> bytes:
     sources = state.get("sources", [])
     if sources:
         pdf.heading("Research Sources", 13)
-        pdf.body("\n".join(f"- {s['title']} — {s['url']}" for s in sources), 8.5)
+        pdf.body("\n".join(
+            f"- {s['title']} — {s['url'] or 'uploaded document'}"
+            for s in sources), 8.5)
 
     pdf.add_page()
     pdf.heading("Transcript", 16)

@@ -45,7 +45,10 @@ topic ──► research (DuckDuckGo + Wikipedia, trafilatura extraction)
 3. **Research** — the app searches the web and Wikipedia, extracts article
    text, and indexes it into overlapping chunks with BM25. Each debater's turn
    retrieves the passages most relevant to the motion and the opponent's last
-   speech.
+   speech. You can also upload your own research materials (PDF, Word,
+   text/Markdown or HTML) in the setup screen — they are indexed alongside
+   the web research and cited by filename, or used exclusively if you tick
+   *Use only my materials*.
 4. **Debate** — classic format, streamed live to the browser token by token:
    openings (PRO, CON) → alternating rebuttal rounds → closings (CON, then PRO
    gets the final word). The debaters are instructed to cite sources inline.
@@ -133,6 +136,7 @@ backend/
   debate.py          pipeline orchestration + debater prompting
   judging.py         judge persona, 100-point ballot, tally
   research.py        DuckDuckGo/Wikipedia scraping
+  materials.py       user-uploaded research documents (PDF/DOCX/text/HTML)
   rag.py             chunking + BM25 retrieval
   models_registry.py model catalog, RAM-aware quant selection, downloads
   llm.py             llama.cpp wrapper (+ fake mode)

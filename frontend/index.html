@@ -60,6 +60,22 @@
       </div>
     </section>
 
+    <section class="card">
+      <h2>4 · Your Research <span class="optional-tag">optional</span></h2>
+      <p class="hint">Give the debaters your own source material — PDF, Word
+        (.docx), text, Markdown or HTML files. They are indexed alongside the
+        automatic Wikipedia &amp; web research, and cited by filename.</p>
+      <input id="material-file" type="file" multiple hidden
+             accept=".pdf,.docx,.txt,.md,.markdown,.rst,.csv,.log,.html,.htm">
+      <button id="material-add">＋ Add documents</button>
+      <ul id="material-list"></ul>
+      <label class="hint checkbox-row">
+        <input type="checkbox" id="materials-only">
+        Use only my materials (skip Wikipedia &amp; web search)
+      </label>
+      <p id="material-error" class="error" hidden></p>
+    </section>
+
     <div class="begin-row">
       <button id="begin-btn" class="primary big">Begin Debate</button>
       <p id="setup-error" class="error" hidden></p>

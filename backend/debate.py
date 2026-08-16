@@ -8,7 +8,7 @@ from __future__ import annotations
 import difflib
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import judging, research
 from .config import FAKE_LLM
@@ -45,6 +45,10 @@ class DebateConfig:
     pro_personality: str
     con_personality: str
     rounds: int = 2
+    # User-uploaded research documents (research.Doc) and whether to add
+    # Wikipedia/web research on top of them.
+    materials: list = field(default_factory=list)
+    use_web_research: bool = True
 
 
 def build_schedule(rounds: int) -> list[dict]:
@@ -215,7 +219,15 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
         emit("status", message="Model loaded.")
 
         emit("phase", phase="research", message="Researching the topic…")
-        docs = research.gather(cfg.topic, emit, stop)
+        docs = list(cfg.materials)
+        for d in docs:
+            emit("research_source", title=d.title, url=d.url,
+                 chars=len(d.text), kind="upload")
+        if cfg.use_web_research:
+            docs += research.gather(cfg.topic, emit, stop)
+        else:
+            emit("status", message="Web research skipped — using your "
+                                   "materials only.")
         index = ResearchIndex(docs)
         emit("research_done", num_sources=len(docs), num_chunks=len(index.chunks))
 

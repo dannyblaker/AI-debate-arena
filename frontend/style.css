@@ -108,6 +108,38 @@ textarea { resize: vertical; }
 .badge.uncensored { background: #3a2a10; color: var(--gold); }
 .badge.will-download { background: #22293a; color: var(--text-dim); }
 
+/* User research materials */
+.optional-tag {
+  font-size: 0.7rem; padding: 0.1rem 0.5rem; border-radius: 8px;
+  vertical-align: middle; margin-left: 0.4rem;
+  background: #22293a; color: var(--text-dim); font-weight: 600;
+}
+#material-add { margin-top: 0.6rem; }
+#material-list { list-style: none; padding: 0; margin: 0.6rem 0 0; }
+.material-item {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 0.4rem;
+  background: var(--bg-inset);
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+.material-remove {
+  padding: 0.05rem 0.5rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+}
+.material-remove:hover { color: #ff8080; border-color: #ff8080; }
+.checkbox-row {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin-top: 0.7rem; cursor: pointer;
+}
+.checkbox-row input { accent-color: var(--accent); }
+.badge.yours { background: var(--pro-dim); color: var(--pro); }
+
 /* Debater config */
 .debater-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 @media (max-width: 700px) { .debater-grid { grid-template-columns: 1fr; } }

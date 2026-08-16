@@ -50,6 +50,59 @@ async function loadSetup() {
 document.querySelectorAll(".example-btn").forEach((b) =>
   b.addEventListener("click", () => { $("topic").value = b.dataset.topic; }));
 
+/* ---------------- User research materials ---------------- */
+
+async function refreshMaterials() {
+  const res = await fetch("/api/materials").then((r) => r.json());
+  const ul = $("material-list");
+  ul.innerHTML = "";
+  for (const m of res.materials) {
+    const li = document.createElement("li");
+    li.className = "material-item";
+    const name = document.createElement("span");
+    name.textContent = `📄 ${m.filename} (${(m.chars / 1000).toFixed(1)}k chars)`;
+    const del = document.createElement("button");
+    del.className = "material-remove";
+    del.title = "Remove";
+    del.textContent = "✕";
+    del.addEventListener("click", async () => {
+      await fetch(`/api/materials/${m.id}`, { method: "DELETE" });
+      refreshMaterials();
+    });
+    li.append(name, del);
+    ul.appendChild(li);
+  }
+}
+
+$("material-add").addEventListener("click", () => $("material-file").click());
+
+$("material-file").addEventListener("change", async () => {
+  const err = $("material-error");
+  err.hidden = true;
+  const failures = [];
+  $("material-add").disabled = true;
+  for (const file of $("material-file").files) {
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await fetch("/api/materials", { method: "POST", body: form });
+      if (!res.ok) {
+        const detail = (await res.json()).detail || res.statusText;
+        failures.push(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+    } catch (e) {
+      failures.push(`${file.name}: ${e.message}`);
+    }
+  }
+  $("material-add").disabled = false;
+  $("material-file").value = "";
+  if (failures.length) {
+    err.textContent = failures.join(" — ");
+    err.hidden = false;
+  }
+  refreshMaterials();
+});
+
 $("begin-btn").addEventListener("click", async () => {
   const topic = $("topic").value.trim();
   const err = $("setup-error");
@@ -70,6 +123,7 @@ $("begin-btn").addEventListener("click", async () => {
         pro_personality: $("pro-personality").value,
         con_personality: $("con-personality").value,
         rounds: parseInt($("rounds").value, 10),
+        use_web_research: !$("materials-only").checked,
       }),
     });
     if (!res.ok) {
@@ -221,10 +275,19 @@ function renderResearch() {
   ul.innerHTML = "";
   for (const s of state.sources) {
     const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = s.url; a.target = "_blank"; a.rel = "noopener";
-    a.textContent = `${s.title} (${(s.chars / 1000).toFixed(1)}k chars)`;
-    li.appendChild(a);
+    const label = `${s.title} (${(s.chars / 1000).toFixed(1)}k chars)`;
+    if (s.url) {
+      const a = document.createElement("a");
+      a.href = s.url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = label;
+      li.appendChild(a);
+    } else {
+      li.textContent = `📄 ${label}`;
+      const badge = document.createElement("span");
+      badge.className = "badge yours";
+      badge.textContent = "your material";
+      li.append(" ", badge);
+    }
     ul.appendChild(li);
   }
 }
@@ -375,4 +438,5 @@ const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /* ---------------- Boot ---------------- */
 loadSetup();
+refreshMaterials();
 connect();
