@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass, field
 
 from . import embeddings, judging, research
-from .config import FAKE_LLM, USE_EMBEDDINGS
+from .config import FAKE_LLM, RAG_QUERIES, USE_EMBEDDINGS
 from .llm import load_llm
 from .models_registry import StopRequested, ensure_model_file, get_model
 from .rag import ResearchIndex
@@ -88,8 +88,54 @@ def _stance(side: str) -> str:
     )
 
 
+def _opponent_last(transcript: list[dict], side: str) -> str:
+    return next((t["text"] for t in reversed(transcript)
+                 if t["speaker"] != side), "")
+
+
+def _research_queries(llm, cfg: DebateConfig, turn: dict,
+                      transcript: list[dict]) -> list[str]:
+    """Let the debater write its own search queries for this turn — far
+    better recall over a large library than one fixed topic query."""
+    side = turn["speaker"]
+    opponent = _opponent_last(transcript, side)
+    fallback = [f"{cfg.topic} {opponent[:400]}" if opponent else cfg.topic]
+    if FAKE_LLM:
+        return fallback
+    prompt = (
+        f'Motion under debate: "{cfg.topic}"\n'
+        f"You argue {'FOR' if side == 'pro' else 'AGAINST'} the motion. "
+        f"You are preparing your {turn['phase']}.\n"
+    )
+    if opponent:
+        prompt += f"Your opponent's latest speech:\n{opponent[:1500]}\n\n"
+    prompt += (
+        f"Write {RAG_QUERIES} different short search queries (3-8 words "
+        "each) to find material in the research library that best supports "
+        "your side"
+        + (" and refutes your opponent's latest points" if opponent else "")
+        + ". One query per line. Output only the queries."
+    )
+    try:
+        raw = llm.chat(
+            [{"role": "system", "content":
+              "You write search queries for a debater's research library. "
+              "Reply with one short query per line, nothing else."},
+             {"role": "user", "content": prompt}],
+            max_tokens=120, temperature=0.3)
+        queries = []
+        for line in raw.splitlines():
+            q = re.sub(r"^[\s\-•*\d.)\"']+|[\"']+$", "", line).strip()
+            if len(q) >= 3 and q.lower() not in (x.lower() for x in queries):
+                queries.append(q[:120])
+        queries = queries[:RAG_QUERIES]
+    except Exception:
+        queries = []
+    return queries + fallback  # the fixed query is always the safety net
+
+
 def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
-                      index: ResearchIndex) -> list[dict]:
+                      excerpts: str) -> list[dict]:
     side = turn["speaker"]
     personality = (cfg.pro_personality if side == "pro" else cfg.con_personality) \
         .strip() or DEFAULT_PERSONALITY
@@ -116,14 +162,6 @@ def _debater_messages(cfg: DebateConfig, turn: dict, transcript: list[dict],
         "Speak in flowing spoken prose — no markdown, no headings, no bullet "
         "lists, no stage directions."
     )
-
-    if turn["phase"] == "rebuttal" and transcript:
-        opponent_last = next((t["text"] for t in reversed(transcript)
-                              if t["speaker"] != side), "")
-        query = f"{cfg.topic} {opponent_last[:400]}"
-    else:
-        query = cfg.topic
-    excerpts = index.format_excerpts(query)
 
     # Present the debate as a real conversation: the opponent's speeches are
     # incoming ("user") messages, this debater's own speeches are its own
@@ -246,7 +284,15 @@ def run_pipeline(cfg: DebateConfig, emit, stop: threading.Event) -> None:
         for turn in build_schedule(cfg.rounds):
             if stop.is_set():
                 raise StopRequested()
-            messages = _debater_messages(cfg, turn, transcript, index)
+            if index.chunks:
+                queries = _research_queries(llm, cfg, turn, transcript)
+                if len(queries) > 1:
+                    emit("status", message=f"{turn['label']} — researching: "
+                         + " · ".join(f"“{q[:60]}”" for q in queries[:-1]))
+                excerpts = index.gather_research(queries)
+            else:
+                excerpts = index.gather_research([cfg.topic])
+            messages = _debater_messages(cfg, turn, transcript, excerpts)
             text = ""
             for attempt in range(2):
                 emit("turn_start", **turn)

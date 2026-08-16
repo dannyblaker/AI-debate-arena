@@ -2,9 +2,14 @@
 
 Documents are split into overlapping chunks. Every chunk is indexed two ways:
 BM25 for keyword relevance, and (when the embedding model is available) dense
-vectors for semantic relevance. The two rankings are fused with reciprocal
-rank fusion, so a chunk that says the same thing as the query in different
-words is still found. Without an embedder the index degrades to BM25-only.
+vectors for semantic relevance; the two rankings are fused with reciprocal
+rank fusion. Without an embedder the index degrades to BM25-only.
+
+gather_research() is the debaters' entry point: it fuses results across
+several search queries, stitches each hit with its neighbouring chunks from
+the original document (retrieved fragments of scripts and prose need their
+surroundings to make sense), merges overlapping regions, and packs the best
+material into a fixed character budget.
 """
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ from dataclasses import dataclass
 
 from rank_bm25 import BM25Okapi
 
-from .config import RAG_EXCERPT_CHARS, RAG_TOP_K
+from .config import RAG_MAX_CHARS, RAG_NEIGHBORS, RAG_TOP_K
 from .research import Doc
 
 CHUNK_CHARS = 1200
@@ -23,6 +28,9 @@ CHUNK_OVERLAP = 200
 RRF_K = 60
 # Rank positions past this contribute noise, not signal.
 RRF_DEPTH = 50
+
+NO_RESEARCH = ("(No research material was found for this topic; "
+               "rely on your own expert knowledge.)")
 
 
 def _tokenize(text: str) -> list[str]:
@@ -34,17 +42,23 @@ class Chunk:
     text: str
     source_title: str
     source_url: str
+    doc_idx: int
+    start: int
+    end: int
 
 
 class ResearchIndex:
     def __init__(self, docs: list[Doc], embedder=None):
+        self.docs = docs
         self.chunks: list[Chunk] = []
-        for doc in docs:
-            step = CHUNK_CHARS - CHUNK_OVERLAP
+        step = CHUNK_CHARS - CHUNK_OVERLAP
+        for di, doc in enumerate(docs):
             for start in range(0, max(len(doc.text), 1), step):
-                piece = doc.text[start:start + CHUNK_CHARS].strip()
+                end = min(start + CHUNK_CHARS, len(doc.text))
+                piece = doc.text[start:end].strip()
                 if len(piece) > 200:
-                    self.chunks.append(Chunk(piece, doc.title, doc.url))
+                    self.chunks.append(Chunk(piece, doc.title, doc.url,
+                                             di, start, end))
         self._bm25 = BM25Okapi([_tokenize(c.text) for c in self.chunks]) if self.chunks else None
         self._embedder = None
         self._vectors = None
@@ -66,11 +80,10 @@ class ResearchIndex:
             idx = [i for i in idx if values[i] > 0]
         return idx
 
-    def retrieve(self, query: str, k: int = RAG_TOP_K) -> list[Chunk]:
-        if not self._bm25:
-            return []
-        # BM25 ranking; zero-score chunks share no words with the query, so
-        # their rank order is meaningless — drop them from this ranking.
+    def _hybrid_ranking(self, query: str) -> list[int]:
+        """Chunk indices for one query, best first (BM25 + vectors, RRF)."""
+        # Zero-score BM25 chunks share no words with the query, so their
+        # rank order is meaningless — drop them from that ranking.
         bm25_scores = self._bm25.get_scores(_tokenize(query))
         rankings = [self._ranked(bm25_scores, positive_only=True)]
         if self._vectors is not None:
@@ -83,13 +96,52 @@ class ResearchIndex:
         for ranking in rankings:
             for rank, i in enumerate(ranking[:RRF_DEPTH]):
                 fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + rank)
-        top = sorted(fused, key=lambda i: fused[i], reverse=True)
-        return [self.chunks[i] for i in top[:k]]
+        return sorted(fused, key=lambda i: fused[i], reverse=True)
 
-    def format_excerpts(self, query: str, k: int = RAG_TOP_K,
-                        max_chars: int = RAG_EXCERPT_CHARS) -> str:
-        chunks = self.retrieve(query, k=k)
-        if not chunks:
-            return "(No research material was found for this topic; rely on your own expert knowledge.)"
-        cut = max_chars if max_chars > 0 else CHUNK_CHARS
-        return "\n\n".join(f"[{c.source_title}]\n{c.text[:cut]}" for c in chunks)
+    def retrieve(self, query: str, k: int = RAG_TOP_K) -> list[Chunk]:
+        if not self._bm25:
+            return []
+        return [self.chunks[i] for i in self._hybrid_ranking(query)[:k]]
+
+    def gather_research(self, queries: list[str],
+                        total_chars: int = RAG_MAX_CHARS) -> str:
+        """Best material across all queries, with neighbouring context
+        stitched in, packed into `total_chars`."""
+        if not self._bm25:
+            return NO_RESEARCH
+        fused: dict[int, float] = {}
+        for query in queries:
+            for rank, i in enumerate(self._hybrid_ranking(query)[:RRF_DEPTH]):
+                fused[i] = fused.get(i, 0.0) + 1.0 / (RRF_K + rank)
+        ordered = sorted(fused, key=lambda i: fused[i], reverse=True)[:RAG_TOP_K]
+
+        pad = RAG_NEIGHBORS * (CHUNK_CHARS - CHUNK_OVERLAP)
+        selected: list[tuple[int, int, int]] = []  # (doc_idx, start, end)
+        used = 0
+        parts: list[str] = []
+        for i in ordered:
+            if used >= total_chars:
+                break
+            c = self.chunks[i]
+            doc = self.docs[c.doc_idx]
+            s = max(0, c.start - pad)
+            e = min(len(doc.text), c.end + pad)
+            # Clip against regions of this doc that are already included.
+            for dj, s2, e2 in selected:
+                if dj == c.doc_idx and s < e2 and e > s2:
+                    if s >= s2 and e <= e2:
+                        s = e  # fully covered
+                    elif s >= s2:
+                        s = e2
+                    else:
+                        e = s2
+            if e - s < 200:
+                continue
+            e = min(e, s + (total_chars - used))
+            excerpt = doc.text[s:e].strip()
+            if len(excerpt) < 200:
+                continue
+            selected.append((c.doc_idx, s, e))
+            used += e - s
+            parts.append(f"[{c.source_title}]\n{excerpt}")
+        return "\n\n".join(parts) if parts else NO_RESEARCH

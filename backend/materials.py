@@ -8,6 +8,7 @@ like the web sources.
 from __future__ import annotations
 
 import io
+import os
 import threading
 import uuid
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from .research import Doc
 
 MAX_FILES = 12
 MAX_FILE_BYTES = 15 * 1024 * 1024
-MAX_MATERIAL_CHARS = 200_000
+MAX_MATERIAL_CHARS = int(os.environ.get("MAX_MATERIAL_CHARS", "600000"))
 
 TEXT_EXTENSIONS = {"txt", "md", "markdown", "rst", "csv", "log"}
 ACCEPTED_EXTENSIONS = TEXT_EXTENSIONS | {"pdf", "docx", "html", "htm"}

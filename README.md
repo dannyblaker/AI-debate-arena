@@ -55,9 +55,11 @@ flowchart TD
    text, and splits it into overlapping chunks indexed two ways: BM25
    keywords and dense vectors from a tiny (~35 MB) GGUF embedding model
    (BGE-small, also run by llama.cpp — auto-downloaded, gracefully skipped
-   offline). Each debater's turn retrieves the passages most relevant to the
-   motion and the opponent's last speech, fusing both rankings with
-   reciprocal rank fusion. You can also upload your own research materials (PDF, Word,
+   offline). Before every speech the debater writes its own search queries —
+   targeting its side of the motion and the opponent's latest points — and
+   the top passages across all queries (both rankings fused with reciprocal
+   rank fusion) are stitched with their surrounding text from the original
+   document, so quotes arrive with their context. You can also upload your own research materials (PDF, Word,
    text/Markdown or HTML) in the setup screen — they are indexed alongside
    the web research and cited by filename, or used exclusively if you tick
    *Use only my materials*.
@@ -139,8 +141,11 @@ uvicorn backend.main:app --reload
 | `N_GPU_LAYERS` | `0` | Model layers offloaded to GPU (`-1` = all; needs the CUDA build, see `Dockerfile.gpu`) |
 | `MAX_WEB_SOURCES` | `8` | Web pages fetched during research |
 | `MAX_WIKI_SOURCES` | `2` | Wikipedia articles fetched |
-| `RAG_TOP_K` | `6` | Research excerpts given to each debater turn |
-| `RAG_EXCERPT_CHARS` | `0` | Characters per excerpt (`0` = the full chunk) |
+| `RAG_TOP_K` | `10` | Max distinct passages retrieved per debater turn |
+| `RAG_MAX_CHARS` | `10000` | Total research characters given to each turn |
+| `RAG_QUERIES` | `3` | Search queries the debater writes for itself per turn |
+| `RAG_NEIGHBORS` | `1` | Adjacent chunks stitched around each retrieved passage |
+| `MAX_MATERIAL_CHARS` | `600000` | Max characters kept per uploaded document |
 | `EMBEDDINGS` | on | `0` = disable semantic search (keyword-only BM25 retrieval) |
 | `EMBED_MODEL_REPO` | `CompendiumLabs/bge-small-en-v1.5-gguf` | HF repo of the GGUF embedding model |
 | `EMBED_MODEL_FILE` | `bge-small-en-v1.5-q8_0.gguf` | Embedding model file within the repo |

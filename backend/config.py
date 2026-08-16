@@ -23,10 +23,14 @@ N_GPU_LAYERS = int(os.environ.get("N_GPU_LAYERS", "0"))
 MAX_WEB_SOURCES = int(os.environ.get("MAX_WEB_SOURCES", "8"))
 MAX_WIKI_SOURCES = int(os.environ.get("MAX_WIKI_SOURCES", "2"))
 
-# Retrieval: how many research excerpts each debater turn receives, and how
-# many characters of each (0 = the full chunk).
-RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "6"))
-RAG_EXCERPT_CHARS = int(os.environ.get("RAG_EXCERPT_CHARS", "0"))
+# Retrieval: before each turn the debater LLM writes RAG_QUERIES search
+# queries of its own; the top RAG_TOP_K passages across all queries are
+# stitched with RAG_NEIGHBORS adjacent chunks of surrounding context, up to
+# a total budget of RAG_MAX_CHARS characters per turn.
+RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "10"))
+RAG_MAX_CHARS = int(os.environ.get("RAG_MAX_CHARS", "10000"))
+RAG_NEIGHBORS = int(os.environ.get("RAG_NEIGHBORS", "1"))
+RAG_QUERIES = int(os.environ.get("RAG_QUERIES", "3"))
 
 # Hybrid retrieval: a small GGUF embedding model (llama.cpp) adds semantic
 # search on top of BM25 keyword search. Set EMBEDDINGS=0 for keyword-only.
